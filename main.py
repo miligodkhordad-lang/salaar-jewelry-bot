@@ -1,14 +1,16 @@
 import os
+import re
 import time
 import requests
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
 API = f"https://tapi.bale.ai/bot{BOT_TOKEN}"
+
+GOLD_URL = "https://www.tgju.org/profile/geram18"
 
 
 def money(number):
-    return f"{int(round(number)):,}".replace(",", "٬")
+    return f"{int(round(number)):,}"
 
 
 def send_message(chat_id, text):
@@ -22,6 +24,38 @@ def send_message(chat_id, text):
     )
 
 
+def get_online_gold_price():
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+
+    response = requests.get(
+        GOLD_URL,
+        headers=headers,
+        timeout=20
+    )
+    response.raise_for_status()
+
+    html = response.text
+
+    patterns = [
+        r'نرخ فعلی[^0-9]{0,100}([0-9][0-9,]{5,})',
+        r'price[^0-9]{0,100}([0-9][0-9,]{5,})'
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, html, re.IGNORECASE)
+
+        if match:
+            price_rial = int(match.group(1).replace(",", ""))
+
+            # کنترل ایمنی برای جلوگیری از قیمت غیرعادی
+            if 50_000_000 <= price_rial <= 1_000_000_000:
+                return price_rial / 10
+
+    raise ValueError("Gold price not found")
+
+
 def calculate_price(weight, gold_price, labor_percent, tax_percent):
     gold_value = weight * gold_price
     labor = gold_value * labor_percent / 100
@@ -32,25 +66,24 @@ def calculate_price(weight, gold_price, labor_percent, tax_percent):
     if tax_percent == 0:
         tax_text = "❌ ندارد"
     else:
-        tax_text = f"💰 {money(tax)} تومان"
+        tax_text = f"{money(tax)} تومان"
 
     return f"""💎 قیمت نهایی
 
-طلای خام: {money(gold_value)} تومان
-اجرت: {labor_percent}٪
-مالیات: {tax_text}
-
-━━━━━━━━━━━━
+⚖️ وزن: {weight} گرم
+🟡 قیمت هر گرم طلای ۱۸ عیار: {money(gold_price)} تومان
+💰 طلای خام: {money(gold_value)} تومان
+🔨 اجرت: {labor_percent}٪
+🧾 مالیات: {tax_text}
 
 💰 قیمت نهایی:
-{money(total)} تومان
-"""
+{money(total)} تومان"""
 
 
 def handle_message(message):
     chat = message.get("chat", {})
     chat_id = chat.get("id")
-    text = message.get("text", "")
+    text = message.get("text", "").strip()
 
     if not chat_id:
         return
@@ -58,52 +91,91 @@ def handle_message(message):
     if text == "/start":
         send_message(
             chat_id,
-            """سلام 👋
+            """👋 سلام
 
-برای محاسبه قیمت طلا از دستور زیر استفاده کن:
+💎 ربات قیمت‌گذاری جواهری سالار
 
-/price وزن_گرم قیمت_هر_گرم اجرت_درصد مالیات_درصد
+دریافت قیمت آنلاین:
+/online
+
+محاسبه آنلاین:
+/price وزن اجرت
 
 مثال:
-
-/price 9.51 19502687 1 0"""
+/price 9.51 5"""
         )
+
+    elif text == "/online":
+        try:
+            gold_price = get_online_gold_price()
+
+            send_message(
+                chat_id,
+                f"""🟡 قیمت آنلاین طلای ۱۸ عیار / ۷۵۰
+
+💰 هر گرم:
+{money(gold_price)} تومان
+
+منبع: TGJU"""
+            )
+
+        except Exception as e:
+            print("Gold price error:", e)
+
+            send_message(
+                chat_id,
+                """⚠️ دریافت قیمت آنلاین طلا ناموفق بود.
+
+برای جلوگیری از محاسبه اشتباه، هیچ قیمتی نمایش داده نشد."""
+            )
 
     elif text.startswith("/price"):
         try:
             parts = text.split()
 
-            if len(parts) != 5:
+            if len(parts) != 3:
                 raise ValueError
 
             weight = float(parts[1])
-            gold_price = float(parts[2])
-            labor_percent = float(parts[3])
-            tax_percent = float(parts[4])
+            labor_percent = float(parts[2])
+
+            if weight <= 0 or labor_percent < 0:
+                raise ValueError
+
+            gold_price = get_online_gold_price()
 
             result = calculate_price(
                 weight,
                 gold_price,
                 labor_percent,
-                tax_percent
+                0
             )
 
             send_message(chat_id, result)
 
-        except (ValueError, TypeError):
+        except ValueError:
             send_message(
                 chat_id,
-                """❌ اطلاعات وارد شده صحیح نیست.
+                """❌ دستور صحیح نیست.
 
 مثال:
+/price 9.51 5"""
+            )
 
-/price 9.51 19502687 1 0"""
+        except Exception as e:
+            print("Price error:", e)
+
+            send_message(
+                chat_id,
+                """⚠️ فعلاً قیمت آنلاین طلا دریافت نشد.
+
+برای جلوگیری از اعلام قیمت اشتباه، محاسبه انجام نشد."""
             )
 
 
 def main():
     if not BOT_TOKEN:
-        raise ValueError("BOT_TOKEN تنظیم نشده است")
+        raise ValueError("BOT_TOKEN is missing")
 
     offset = 0
 
