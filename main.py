@@ -1,12 +1,18 @@
 import os
-import re
 import time
 import requests
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN is not set")
+
 API = f"https://tapi.bale.ai/bot{BOT_TOKEN}"
 
-GOLD_URL = "https://www.tgju.org/profile/geram18"
+# قیمت هر گرم طلای 18 عیار
+# فعلاً برای تست دستی است؛ بعد از سالم شدن ربات
+# قیمت آنلاین را به آن وصل می‌کنیم.
+GOLD_PRICE = 24200000
 
 
 def money(number):
@@ -14,7 +20,7 @@ def money(number):
 
 
 def send_message(chat_id, text):
-    requests.post(
+    response = requests.post(
         f"{API}/sendMessage",
         json={
             "chat_id": chat_id,
@@ -23,69 +29,54 @@ def send_message(chat_id, text):
         timeout=30
     )
 
-
-def get_online_gold_price():
-    response = requests.get(
-        GOLD_URL,
-        timeout=30,
-        headers={
-            "User-Agent": "Mozilla/5.0"
-        }
+    print(
+        "sendMessage:",
+        response.status_code,
+        response.text,
+        flush=True
     )
 
-    response.raise_for_status()
-    html = response.text
-
-    patterns = [
-        r'data-col="info\.last_trade\.PDrCotVal"[^>]*>([\d,]+)',
-        r'info\.last_trade\.PDrCotVal[^0-9]*([\d,]+)',
-        r'"p":\s*"([\d,]+)"'
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, html)
-
-        if match:
-            value = match.group(1).replace(",", "")
-            price = int(value)
-
-            # TGJU may provide the value in rials.
-            # Convert to toman when necessary.
-            if price > 100_000_000:
-                price = price / 10
-
-            return price
-
-    raise ValueError("Gold price not found")
+    return response
 
 
-def online_price_text():
-    gold_price = get_online_gold_price()
-
-    return f"""🟡 قیمت آنلاین طلای ۱۸ عیار / ۷۵۰
-
-💰 هر گرم:
-{money(gold_price)} تومان
-
-منبع: TGJU"""
-
-
-def calculate_price(weight, gold_price, labor_percent):
-    gold_value = weight * gold_price
+def calculate_price(weight, labor_percent):
+    gold_value = weight * GOLD_PRICE
     labor = gold_value * labor_percent / 100
     total = gold_value + labor
 
-    return f"""💎 قیمت نهایی
+    return f"""💎 جواهری سالار
 
 ⚖️ وزن: {weight:g} گرم
-🟡 قیمت هر گرم طلای ۱۸ عیار:
-{money(gold_price)} تومان
 
-💰 طلای خام: {money(gold_value)} تومان
-🔨 اجرت: {labor_percent:g}٪
+💰 قیمت هر گرم طلای ۱۸ عیار:
+{money(GOLD_PRICE)} تومان
 
-💰 قیمت نهایی:
-{money(total)} تومان"""
+🔸 قیمت طلای خام:
+{money(gold_value)} تومان
+
+🔸 اجرت: {labor_percent:g}٪
+{money(labor)} تومان
+
+💵 قیمت نهایی:
+{money(total)} تومان
+
+🌱 @salar_jewelry"""
+
+
+def help_text():
+    return """💎 ربات جواهری سالار
+
+برای محاسبه قیمت محصول بنویس:
+
+/price وزن اجرت
+
+مثال:
+
+/price 9.51 5
+
+یعنی:
+وزن 9.51 گرم
+اجرت 5 درصد"""
 
 
 def handle_message(message):
@@ -100,35 +91,20 @@ def handle_message(message):
         send_message(
             chat_id,
             """👋 سلام
+به ربات جواهری سالار خوش آمدید.
 
-💎 ربات قیمت‌گذاری جواهری سالار
+برای مشاهده راهنما:
+/help
 
-برای مشاهده قیمت آنلاین طلا:
-/online
-
-برای محاسبه قیمت محصول:
+برای محاسبه قیمت:
 /price وزن اجرت
 
 مثال:
 /price 9.51 5"""
         )
 
-    elif text == "/online":
-        try:
-            send_message(
-                chat_id,
-                online_price_text()
-            )
-
-        except Exception as e:
-            print("Gold price error:", e)
-
-            send_message(
-                chat_id,
-                """❌ دریافت قیمت آنلاین طلا با خطا مواجه شد.
-
-لطفاً چند لحظه بعد دوباره /online را ارسال کنید."""
-            )
+    elif text == "/help":
+        send_message(chat_id, help_text())
 
     elif text.startswith("/price"):
         try:
@@ -151,11 +127,8 @@ def handle_message(message):
             if labor_percent < 0:
                 raise ValueError
 
-            gold_price = get_online_gold_price()
-
             result = calculate_price(
                 weight,
-                gold_price,
                 labor_percent
             )
 
@@ -167,33 +140,25 @@ def handle_message(message):
         except (ValueError, TypeError):
             send_message(
                 chat_id,
-                """❌ اطلاعات وارد شده صحیح نیست.
+                """❌ اطلاعات درست وارد نشده.
 
 فرمت صحیح:
+
 /price وزن اجرت
 
 مثال:
+
 /price 9.51 5"""
-            )
-
-        except Exception as e:
-            print("Price calculation error:", e)
-
-            send_message(
-                chat_id,
-                """❌ دریافت قیمت آنلاین طلا با خطا مواجه شد.
-
-لطفاً چند لحظه بعد دوباره امتحان کنید."""
             )
 
 
 def main():
-    if not BOT_TOKEN:
-        raise ValueError("BOT_TOKEN is not set")
-
     offset = 0
 
-    print("Bale bot is running...", flush=True)
+    print(
+        "Salar Jewelry Bot is running...",
+        flush=True
+    )
 
     while True:
         try:
@@ -206,18 +171,29 @@ def main():
                 timeout=30
             )
 
+            print(
+                "getUpdates:",
+                response.status_code,
+                flush=True
+            )
+
             data = response.json()
 
             if not data.get("ok"):
-                print(data, flush=True)
+                print(
+                    "Bale API error:",
+                    data,
+                    flush=True
+                )
+
                 time.sleep(5)
                 continue
 
             for update in data.get("result", []):
-                offset = update.get(
-                    "update_id",
-                    offset
-                ) + 1
+                update_id = update.get("update_id")
+
+                if update_id is not None:
+                    offset = update_id + 1
 
                 message = update.get("message")
 
@@ -225,7 +201,12 @@ def main():
                     handle_message(message)
 
         except Exception as e:
-            print("Error:", e, flush=True)
+            print(
+                "Error:",
+                repr(e),
+                flush=True
+            )
+
             time.sleep(5)
 
 
