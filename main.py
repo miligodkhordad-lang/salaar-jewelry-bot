@@ -11,11 +11,26 @@ if not BOT_TOKEN:
 API = f"https://tapi.bale.ai/bot{BOT_TOKEN}"
 GOLD_URL = "https://www.tgju.org/profile/geram18"
 
-CHANNEL_ID = "@salar_jewelry"
-
 
 def money(number):
     return f"{int(round(number)):,}"
+
+
+def api_request(method, payload):
+    response = requests.post(
+        f"{API}/{method}",
+        json=payload,
+        timeout=30
+    )
+
+    print(
+        method,
+        response.status_code,
+        response.text,
+        flush=True
+    )
+
+    return response
 
 
 def send_message(chat_id, text, reply_markup=None):
@@ -27,42 +42,33 @@ def send_message(chat_id, text, reply_markup=None):
     if reply_markup is not None:
         payload["reply_markup"] = reply_markup
 
-    response = requests.post(
-        f"{API}/sendMessage",
-        json=payload,
-        timeout=30
+    return api_request("sendMessage", payload)
+
+
+def edit_keyboard(chat_id, message_id, keyboard):
+    return api_request(
+        "editMessageReplyMarkup",
+        {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "reply_markup": keyboard
+        }
     )
 
-    print(
-        "sendMessage:",
-        response.status_code,
-        response.text,
-        flush=True
-    )
 
-    return response
-
-
-def answer_callback(callback_query_id, text=None):
+def answer_callback(callback_id, text=None):
     payload = {
-        "callback_query_id": callback_query_id
+        "callback_query_id": callback_id
     }
 
     if text:
         payload["text"] = text
+        payload["show_alert"] = True
 
-    try:
-        requests.post(
-            f"{API}/answerCallbackQuery",
-            json=payload,
-            timeout=30
-        )
-    except Exception as e:
-        print(
-            "answerCallbackQuery error:",
-            repr(e),
-            flush=True
-        )
+    return api_request(
+        "answerCallbackQuery",
+        payload
+    )
 
 
 def get_gold_price():
@@ -81,6 +87,7 @@ def get_gold_price():
     )
 
     response.raise_for_status()
+
     html = response.text
 
     patterns = [
@@ -120,54 +127,82 @@ def get_gold_price():
     raise ValueError("Gold price not found")
 
 
-def online_price_text():
-    gold_price = get_gold_price()
+def normalize_digits(text):
+    table = str.maketrans(
+        "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
+        "01234567890123456789"
+    )
 
-    return f"""🟡 قیمت آنلاین طلای ۱۸ عیار / ۷۵۰
-
-💰 هر گرم:
-{money(gold_price)} تومان
-
-منبع: TGJU"""
+    return text.translate(table)
 
 
-def calculate_price(weight, gold_price, labor_percent):
-    gold_value = weight * gold_price
-    labor_value = gold_value * labor_percent / 100
-    total = gold_value + labor_value
+def extract_product_info(text):
+    if not text:
+        return None
 
-    return f"""💎 قیمت روز این محصول
+    text = normalize_digits(text)
+    text = text.replace("٫", ".")
+    text = text.replace("٪", "%")
 
-⚖️ وزن: {weight:g} گرم
+    weight_patterns = [
+        r"وزن\s*[:：]?\s*([0-9]+(?:\.[0-9]+)?)",
+        r"وزن\s+([0-9]+(?:\.[0-9]+)?)"
+    ]
 
-🟡 قیمت هر گرم طلای ۱۸ عیار:
-{money(gold_price)} تومان
+    labor_patterns = [
+        r"اجرت(?:\s*فقط)?\s*[:：]?\s*%?\s*([0-9]+(?:\.[0-9]+)?)",
+        r"اجرت(?:\s*فقط)?\s*[:：]?\s*([0-9]+(?:\.[0-9]+)?)\s*%"
+    ]
 
-💰 طلای خام:
-{money(gold_value)} تومان
+    weight = None
+    labor = None
 
-🔨 اجرت: {labor_percent:g}٪
-{money(labor_value)} تومان
+    for pattern in weight_patterns:
+        match = re.search(
+            pattern,
+            text,
+            re.IGNORECASE
+        )
 
-💰 قیمت نهایی:
-{money(total)} تومان
+        if match:
+            weight = float(match.group(1))
+            break
 
-🌱 @salar_jewelry"""
+    for pattern in labor_patterns:
+        match = re.search(
+            pattern,
+            text,
+            re.IGNORECASE
+        )
+
+        if match:
+            labor = float(match.group(1))
+            break
+
+    if weight is None or labor is None:
+        return None
+
+    if weight <= 0 or labor < 0:
+        return None
+
+    return weight, labor
 
 
-def product_keyboard(weight, labor_percent):
+def product_keyboard(weight, labor):
     return {
         "inline_keyboard": [
             [
                 {
-                    "text": "💰 مشاهده قیمت روز این محصول",
+                    "text":
+                        "💰 مشاهده قیمت روز این محصول",
                     "callback_data":
-                        f"product:{weight}:{labor_percent}"
+                        f"product:{weight:g}:{labor:g}"
                 }
             ],
             [
                 {
-                    "text": "💰 مشاهده قیمت طلا",
+                    "text":
+                        "💰 مشاهده قیمت طلا",
                     "callback_data": "gold"
                 }
             ]
@@ -175,28 +210,76 @@ def product_keyboard(weight, labor_percent):
     }
 
 
-def start_text():
-    return """👋 سلام
-به ربات جواهری سالار خوش آمدید.
+def product_price_text(weight, labor):
+    gold_price = get_gold_price()
 
-🟡 قیمت آنلاین طلا:
-/online
+    gold_value = weight * gold_price
+    labor_value = gold_value * labor / 100
+    total = gold_value + labor_value
 
-💎 محاسبه قیمت:
-/price وزن اجرت
-
-🔘 ساخت دکمه در چت خصوصی:
-/product وزن اجرت
-
-📢 ارسال محصول به کانال:
-/channel وزن اجرت
-
-مثال:
-/channel 2.58 7"""
+    return (
+        f"💎 قیمت روز این محصول\n\n"
+        f"⚖️ وزن: {weight:g} گرم\n"
+        f"🔨 اجرت: {labor:g}٪\n\n"
+        f"🟡 طلای ۱۸ عیار: "
+        f"{money(gold_price)} تومان\n\n"
+        f"💰 قیمت نهایی:\n"
+        f"{money(total)} تومان"
+    )
 
 
-def handle_message(message):
-    chat = message.get("chat", {})
+def process_channel_post(message):
+    chat = message.get("chat") or {}
+
+    chat_id = chat.get("id")
+    message_id = message.get("message_id")
+
+    if not chat_id or not message_id:
+        return
+
+    # برای پست متنی
+    text = message.get("text")
+
+    # برای پست عکس/ویدیو که توضیحات دارد
+    if not text:
+        text = message.get("caption")
+
+    product = extract_product_info(text)
+
+    if not product:
+        print(
+            "No weight/labor found in channel post",
+            flush=True
+        )
+        return
+
+    weight, labor = product
+
+    print(
+        "Product detected:",
+        weight,
+        labor,
+        flush=True
+    )
+
+    response = edit_keyboard(
+        chat_id,
+        message_id,
+        product_keyboard(
+            weight,
+            labor
+        )
+    )
+
+    print(
+        "Keyboard attached:",
+        response.text,
+        flush=True
+    )
+
+
+def handle_private_message(message):
+    chat = message.get("chat") or {}
     chat_id = chat.get("id")
 
     text = (
@@ -209,14 +292,31 @@ def handle_message(message):
     if text == "/start":
         send_message(
             chat_id,
-            start_text()
+            """👋 سلام
+به ربات جواهری سالار خوش آمدید.
+
+🟡 قیمت آنلاین طلا:
+/online
+
+💎 محاسبه قیمت:
+/price وزن اجرت
+
+مثال:
+/price 2.58 7"""
         )
 
     elif text == "/online":
         try:
+            gold_price = get_gold_price()
+
             send_message(
                 chat_id,
-                online_price_text()
+                f"""🟡 قیمت آنلاین طلای ۱۸ عیار / ۷۵۰
+
+💰 هر گرم:
+{money(gold_price)} تومان
+
+منبع: TGJU"""
             )
 
         except Exception as e:
@@ -228,7 +328,7 @@ def handle_message(message):
 
             send_message(
                 chat_id,
-                "❌ دریافت قیمت آنلاین طلا با خطا مواجه شد."
+                "❌ دریافت قیمت آنلاین با خطا مواجه شد."
             )
 
     elif text.startswith("/price"):
@@ -242,25 +342,19 @@ def handle_message(message):
                 parts[1].replace(",", ".")
             )
 
-            labor_percent = float(
+            labor = float(
                 parts[2].replace(",", ".")
             )
 
-            if weight <= 0 or labor_percent < 0:
-                raise ValueError
-
-            gold_price = get_gold_price()
-
             send_message(
                 chat_id,
-                calculate_price(
+                product_price_text(
                     weight,
-                    gold_price,
-                    labor_percent
+                    labor
                 )
             )
 
-        except ValueError:
+        except Exception:
             send_message(
                 chat_id,
                 """❌ فرمت صحیح:
@@ -271,155 +365,24 @@ def handle_message(message):
 /price 2.58 7"""
             )
 
-        except Exception as e:
-            print(
-                "Price error:",
-                repr(e),
-                flush=True
-            )
-
-            send_message(
-                chat_id,
-                "❌ دریافت قیمت با خطا مواجه شد."
-            )
-
-    elif text.startswith("/product"):
-        try:
-            parts = text.split()
-
-            if len(parts) != 3:
-                raise ValueError
-
-            weight = float(
-                parts[1].replace(",", ".")
-            )
-
-            labor_percent = float(
-                parts[2].replace(",", ".")
-            )
-
-            if weight <= 0 or labor_percent < 0:
-                raise ValueError
-
-            send_message(
-                chat_id,
-                f"""💎 جواهری سالار
-
-⚖️ وزن محصول: {weight:g} گرم
-🔨 اجرت: {labor_percent:g}٪
-
-برای مشاهده قیمت روز دکمه زیر را بزنید 👇""",
-                product_keyboard(
-                    weight,
-                    labor_percent
-                )
-            )
-
-        except ValueError:
-            send_message(
-                chat_id,
-                """❌ فرمت صحیح:
-
-/product وزن اجرت
-
-مثال:
-/product 2.58 7"""
-            )
-
-    elif text.startswith("/channel"):
-        try:
-            parts = text.split()
-
-            if len(parts) != 3:
-                raise ValueError
-
-            weight = float(
-                parts[1].replace(",", ".")
-            )
-
-            labor_percent = float(
-                parts[2].replace(",", ".")
-            )
-
-            if weight <= 0 or labor_percent < 0:
-                raise ValueError
-
-            response = send_message(
-                CHANNEL_ID,
-                f"""💎 جواهری سالار
-
-⚖️ وزن: {weight:g} گرم
-🔨 اجرت: {labor_percent:g}٪
-
-برای مشاهده قیمت روز 👇""",
-                product_keyboard(
-                    weight,
-                    labor_percent
-                )
-            )
-
-            try:
-                result = response.json()
-            except Exception:
-                result = {}
-
-            if result.get("ok"):
-                send_message(
-                    chat_id,
-                    "✅ محصول با دکمه‌های قیمت در کانال منتشر شد."
-                )
-            else:
-                send_message(
-                    chat_id,
-                    """❌ ارسال به کانال انجام نشد.
-
-لطفاً دسترسی ارسال پیام ربات در کانال را بررسی کنید."""
-                )
-
-        except ValueError:
-            send_message(
-                chat_id,
-                """❌ فرمت صحیح:
-
-/channel وزن اجرت
-
-مثال:
-/channel 2.58 7"""
-            )
-
-        except Exception as e:
-            print(
-                "Channel error:",
-                repr(e),
-                flush=True
-            )
-
-            send_message(
-                chat_id,
-                "❌ ارسال به کانال با خطا مواجه شد."
-            )
-
 
 def handle_callback(callback):
     callback_id = callback.get("id")
-    data = callback.get("data", "")
 
-    message = callback.get("message") or {}
-    chat = message.get("chat") or {}
-    chat_id = chat.get("id")
-
-    if not chat_id:
+    if not callback_id:
         return
+
+    data = callback.get("data", "")
 
     try:
         if data == "gold":
-            send_message(
-                chat_id,
-                online_price_text()
-            )
+            gold_price = get_gold_price()
 
-            if callback_id:
-                answer_callback(callback_id)
+            answer_callback(
+                callback_id,
+                "قیمت طلای ۱۸ عیار:\n"
+                f"{money(gold_price)} تومان"
+            )
 
         elif data.startswith("product:"):
             parts = data.split(":")
@@ -428,21 +391,23 @@ def handle_callback(callback):
                 raise ValueError
 
             weight = float(parts[1])
-            labor_percent = float(parts[2])
+            labor = float(parts[2])
 
             gold_price = get_gold_price()
 
-            send_message(
-                chat_id,
-                calculate_price(
-                    weight,
-                    gold_price,
-                    labor_percent
-                )
+            gold_value = weight * gold_price
+            labor_value = (
+                gold_value * labor / 100
+            )
+            total = (
+                gold_value + labor_value
             )
 
-            if callback_id:
-                answer_callback(callback_id)
+            answer_callback(
+                callback_id,
+                f"قیمت روز محصول:\n"
+                f"{money(total)} تومان"
+            )
 
     except Exception as e:
         print(
@@ -451,11 +416,13 @@ def handle_callback(callback):
             flush=True
         )
 
-        if callback_id:
+        try:
             answer_callback(
                 callback_id,
                 "خطا در دریافت قیمت"
             )
+        except Exception:
+            pass
 
 
 def main():
@@ -489,21 +456,58 @@ def main():
                 time.sleep(5)
                 continue
 
-            for update in data.get("result", []):
-                update_id = update.get("update_id")
+            for update in data.get(
+                "result",
+                []
+            ):
+                update_id = update.get(
+                    "update_id"
+                )
 
                 if update_id is not None:
                     offset = update_id + 1
 
-                message = update.get("message")
+                # پیام خصوصی ربات
+                message = update.get(
+                    "message"
+                )
 
                 if message:
-                    handle_message(message)
+                    handle_private_message(
+                        message
+                    )
 
-                callback = update.get("callback_query")
+                # پست جدید کانال
+                channel_post = update.get(
+                    "channel_post"
+                )
+
+                if channel_post:
+                    process_channel_post(
+                        channel_post
+                    )
+
+                # اگر پست کانال ویرایش شد
+                edited_channel_post = (
+                    update.get(
+                        "edited_channel_post"
+                    )
+                )
+
+                if edited_channel_post:
+                    process_channel_post(
+                        edited_channel_post
+                    )
+
+                # کلیک روی دکمه
+                callback = update.get(
+                    "callback_query"
+                )
 
                 if callback:
-                    handle_callback(callback)
+                    handle_callback(
+                        callback
+                    )
 
         except Exception as e:
             print(
