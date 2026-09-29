@@ -82,47 +82,91 @@ def make_keyboard(weight, labor):
 
 
 def get_gold_price():
+    """
+    دریافت نرخ جاری طلای ۱۸ عیار / 750
+    از صفحه اختصاصی TGJU.
+
+    قیمت TGJU در این صفحه ریال است
+    و برای نمایش در ربات به تومان تبدیل می‌شود.
+    """
+
     r = requests.get(
         TGJU,
         headers={
             "User-Agent":
             "Mozilla/5.0 (Linux; Android 15) "
             "AppleWebKit/537.36 "
-            "Chrome/140 Mobile Safari/537.36"
+            "(KHTML, like Gecko) "
+            "Chrome/140.0 Mobile Safari/537.36",
+
+            "Accept":
+            "text/html,application/xhtml+xml,"
+            "application/xml;q=0.9,*/*;q=0.8",
+
+            "Accept-Language":
+            "fa-IR,fa;q=0.9,en;q=0.7",
+
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache"
+        },
+        params={
+            "_": int(time.time())
         },
         timeout=20
     )
 
     r.raise_for_status()
+
     html = r.text
 
-    patterns = [
-        r'data-col="info\.last_trade\.PDrCotVal"'
-        r'[^>]*>([\d,]+)<',
+    # فقط فیلد نرخ جاری صفحه geram18
+    match = re.search(
+        r'data-col=["\']'
+        r'info\.last_trade\.PDrCotVal'
+        r'["\'][^>]*>\s*'
+        r'([0-9۰-۹٠-٩,٬]+)',
+        html,
+        re.IGNORECASE
+    )
 
-        r'<span[^>]*class="[^"]*value[^"]*"'
-        r'[^>]*>([\d,]+)</span>',
-
-        r'"p"\s*:\s*"([\d,]+)"'
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, html)
-
-        if not match:
-            continue
-
-        price = int(
-            match.group(1).replace(",", "")
+    if not match:
+        raise RuntimeError(
+            "Current geram18 price not found"
         )
 
-        if price > 100_000_000:
-            price //= 10
+    raw_price = normalize(
+        match.group(1)
+    )
 
-        if 1_000_000 < price < 100_000_000:
-            return price
+    raw_price = (
+        raw_price
+        .replace(",", "")
+        .replace("٬", "")
+    )
 
-    raise RuntimeError("Gold price not found")
+    price_rial = int(raw_price)
+
+    # کنترل منطقی نرخ
+    if not (
+        100_000_000
+        < price_rial
+        < 1_000_000_000
+    ):
+        raise RuntimeError(
+            f"Invalid TGJU price: {price_rial}"
+        )
+
+    # ریال -> تومان
+    price_toman = price_rial // 10
+
+    print(
+        "TGJU GERAM18:",
+        f"{price_rial:,} rial = "
+        f"{price_toman:,} toman",
+        flush=True
+    )
+
+    return price_toman
 
 
 def answer_callback(callback_id, text):
@@ -140,12 +184,17 @@ def handle_callback(cb):
     callback_id = cb.get("id")
     data = cb.get("data") or ""
 
-    print("CALLBACK:", data, flush=True)
+    print(
+        "CALLBACK:",
+        data,
+        flush=True
+    )
 
     if not callback_id:
         return
 
     try:
+
         if data == "gold":
             gram = get_gold_price()
 
@@ -154,39 +203,59 @@ def handle_callback(cb):
                 f"🟡 هر گرم: {gram:,} تومان"
             )
 
-            answer_callback(callback_id, text)
+            answer_callback(
+                callback_id,
+                text
+            )
             return
 
         if data.startswith("price:"):
             parts = data.split(":")
 
             if len(parts) != 3:
-                raise ValueError("Invalid callback data")
+                raise ValueError(
+                    "Invalid callback data"
+                )
 
             weight = float(parts[1])
             labor = float(parts[2])
 
             gram = get_gold_price()
 
-            gold_value = round(weight * gram)
+            gold_value = round(
+                weight * gram
+            )
 
-            # اجرت همچنان محاسبه می‌شود،
-            # فقط مبلغ آن در پنجره نمایش داده نمی‌شود.
+            # اجرت محاسبه می‌شود
+            # اما مبلغ جداگانه آن نمایش داده نمی‌شود
             labor_value = round(
                 gold_value * labor / 100
             )
 
-            final_price = gold_value + labor_value
+            final_price = (
+                gold_value + labor_value
+            )
 
             text = (
                 "✨ قیمت روز محصول\n\n"
-                f"🟡 طلای ۱۸ عیار: {gram:,} تومان\n\n"
-                f"⚖️ وزن: {weight:g} گرم\n"
-                f"💎 اجرت: {labor:g}٪\n\n"
-                f"💰 مبلغ نهایی: {final_price:,} تومان"
+
+                f"🟡 طلای ۱۸ عیار: "
+                f"{gram:,} تومان\n\n"
+
+                f"⚖️ وزن: "
+                f"{weight:g} گرم\n"
+
+                f"💎 اجرت: "
+                f"{labor:g}٪\n\n"
+
+                f"💰 مبلغ نهایی: "
+                f"{final_price:,} تومان"
             )
 
-            answer_callback(callback_id, text)
+            answer_callback(
+                callback_id,
+                text
+            )
             return
 
         answer_callback(
@@ -264,7 +333,10 @@ def publish_product(msg):
             "photo": file_id,
             "caption": caption,
             "reply_markup":
-                make_keyboard(weight, labor)
+                make_keyboard(
+                    weight,
+                    labor
+                )
         }
     )
 
@@ -314,29 +386,40 @@ def main():
             )
 
             r.raise_for_status()
+
             response = r.json()
 
-            for update in response.get("result", []):
+            for update in response.get(
+                "result",
+                []
+            ):
                 print(
                     "UPDATE:",
                     repr(update),
                     flush=True
                 )
 
-                update_id = update.get("update_id")
+                update_id = update.get(
+                    "update_id"
+                )
 
                 if update_id is not None:
                     offset = update_id + 1
 
-                callback = update.get("callback_query")
+                callback = update.get(
+                    "callback_query"
+                )
 
                 if callback:
-                    handle_callback(callback)
+                    handle_callback(
+                        callback
+                    )
                     continue
 
                 msg = (
                     update.get("message")
-                    or update.get("edited_message")
+                    or
+                    update.get("edited_message")
                 )
 
                 if msg:
