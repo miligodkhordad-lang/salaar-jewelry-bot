@@ -3,208 +3,124 @@ import re
 import time
 import requests
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.environ["BOT_TOKEN"]
+API = f"https://tapi.bale.ai/bot{TOKEN}"
 
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN is not set")
-
-API = f"https://tapi.bale.ai/bot{BOT_TOKEN}"
-CHANNEL_USERNAME = "salar_jewelry"
-
-TGJU_URL = "https://www.tgju.org/profile/geram18"
+CHANNEL = "salar_jewelry"
+TGJU = "https://www.tgju.org/profile/geram18"
 
 
-# -----------------------------
-# BALE API
-# -----------------------------
-
-def api_call(method, payload):
-    response = requests.post(
+def bale(method, data):
+    r = requests.post(
         f"{API}/{method}",
-        json=payload,
+        json=data,
         timeout=30
     )
 
     print(
+        "BALE:",
         method,
-        response.status_code,
-        response.text,
+        r.status_code,
+        r.text,
         flush=True
     )
 
-    return response
+    r.raise_for_status()
+    return r.json()
 
 
-# -----------------------------
-# تبدیل اعداد فارسی به انگلیسی
-# -----------------------------
-
-def normalize_number(text):
+def normalize(text):
     table = str.maketrans(
-        "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩٫",
-        "01234567890123456789."
+        "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩٫،",
+        "01234567890123456789.."
     )
-
     return text.translate(table)
 
 
-# -----------------------------
-# خواندن وزن و اجرت از پست
-# -----------------------------
+def get_product(caption):
+    text = normalize(caption or "")
 
-def extract_weight_and_labor(caption):
-    if not caption:
-        return None, None
-
-    text = normalize_number(caption)
-
-    weight_match = re.search(
-        r"وزن\s*[:：]?\s*\*?\s*([0-9]+(?:[.,][0-9]+)?)",
+    w = re.search(
+        r"وزن\s*[:：]?\s*\*?\s*"
+        r"([0-9]+(?:\.[0-9]+)?)",
         text
     )
 
-    labor_match = re.search(
-        r"اجرت(?:\s*فقط)?\s*[:：]?\s*\*?\s*([0-9]+(?:[.,][0-9]+)?)\s*[٪%]?",
+    p = re.search(
+        r"اجرت(?:\s*فقط)?\s*[:：]?\s*\*?\s*"
+        r"([0-9]+(?:\.[0-9]+)?)\s*[٪%]?",
         text
     )
 
-    if not weight_match or not labor_match:
-        return None, None
+    if not w or not p:
+        return None
 
-    weight = float(
-        weight_match.group(1).replace(",", ".")
-    )
-
-    labor = float(
-        labor_match.group(1).replace(",", ".")
-    )
-
-    return weight, labor
+    return float(w.group(1)), float(p.group(1))
 
 
-# -----------------------------
-# قیمت آنلاین طلای ۱۸ عیار
-# -----------------------------
-
-def get_gold_price():
-
-    headers = {
-        "User-Agent":
-        "Mozilla/5.0 (Linux; Android 15) "
-        "AppleWebKit/537.36 Chrome/140 Mobile Safari/537.36"
-    }
-
-    response = requests.get(
-        TGJU_URL,
-        headers=headers,
-        timeout=20
-    )
-
-    response.raise_for_status()
-
-    html = response.text
-
-    patterns = [
-        r'data-col="info\.last_trade\.PDrCotVal"[^>]*>([\d,]+)<',
-        r'<span[^>]*class="[^"]*value[^"]*"[^>]*>([\d,]+)</span>',
-        r'"p"\s*:\s*"([\d,]+)"'
-    ]
-
-    for pattern in patterns:
-
-        match = re.search(
-            pattern,
-            html
-        )
-
-        if match:
-
-            value = int(
-                match.group(1).replace(",", "")
-            )
-
-            # تبدیل ریال به تومان
-            if value > 100_000_000:
-                value //= 10
-
-            if 1_000_000 < value < 100_000_000:
-                return value
-
-    # روش پشتیبان
-    numbers = re.findall(
-        r'\b[\d,]{7,12}\b',
-        html
-    )
-
-    for number in numbers:
-
-        try:
-            value = int(
-                number.replace(",", "")
-            )
-
-            if value > 100_000_000:
-                value //= 10
-
-            if 1_000_000 < value < 100_000_000:
-                return value
-
-        except:
-            pass
-
-    raise ValueError(
-        "Gold price not found"
-    )
-
-
-# -----------------------------
-# ساخت دکمه‌ها
-# -----------------------------
-
-def make_keyboard(weight, labor):
-
+def keyboard(weight, labor):
     return {
         "inline_keyboard": [
             [
                 {
-                    "text":
-                    "💰 مشاهده قیمت روز این محصول",
-
+                    "text": "💰 مشاهده قیمت روز این محصول",
                     "callback_data":
-                    f"product:{weight:g}:{labor:g}"
+                    f"price:{weight:g}:{labor:g}"
                 }
             ],
             [
                 {
-                    "text":
-                    "💰 مشاهده قیمت طلا",
-
-                    "callback_data":
-                    "gold"
+                    "text": "💰 مشاهده قیمت طلا",
+                    "callback_data": "gold"
                 }
             ]
         ]
     }
 
 
-# -----------------------------
-# اضافه کردن دکمه زیر همان پست
-# -----------------------------
+def process_post(msg):
+    chat = msg.get("chat") or {}
+    sender = msg.get("sender_chat") or {}
 
-def add_buttons_to_post(
-    chat_id,
-    message_id,
-    weight,
-    labor
-):
+    username = (
+        chat.get("username")
+        or sender.get("username")
+        or ""
+    ).lstrip("@").lower()
 
-    return api_call(
+    if username != CHANNEL:
+        return
+
+    caption = (
+        msg.get("caption")
+        or msg.get("text")
+        or ""
+    )
+
+    product = get_product(caption)
+
+    if not product:
+        print(
+            "NO PRODUCT DATA",
+            flush=True
+        )
+        return
+
+    weight, labor = product
+
+    print(
+        "PRODUCT:",
+        weight,
+        labor,
+        flush=True
+    )
+
+    bale(
         "editMessageReplyMarkup",
         {
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "reply_markup":
-            make_keyboard(
+            "chat_id": chat.get("id"),
+            "message_id": msg.get("message_id"),
+            "reply_markup": keyboard(
                 weight,
                 labor
             )
@@ -212,201 +128,115 @@ def add_buttons_to_post(
     )
 
 
-# -----------------------------
-# پردازش پست کانال
-# -----------------------------
-
-def process_channel_message(message):
-
-    chat = message.get("chat") or {}
-    sender_chat = (
-        message.get("sender_chat")
-        or {}
+def gold_price():
+    r = requests.get(
+        TGJU,
+        headers={
+            "User-Agent":
+            "Mozilla/5.0 (Linux; Android 15) "
+            "AppleWebKit/537.36 Chrome Mobile"
+        },
+        timeout=20
     )
 
-    chat_id = chat.get("id")
-    message_id = message.get("message_id")
+    r.raise_for_status()
 
-    username = (
-        chat.get("username")
-        or sender_chat.get("username")
-        or ""
-    )
+    html = r.text
 
-    username = (
-        username
-        .lstrip("@")
-        .lower()
-    )
+    patterns = [
+        r'data-col="info\.last_trade\.PDrCotVal"'
+        r'[^>]*>([\d,]+)<',
 
-    if username != CHANNEL_USERNAME.lower():
-        return
+        r'"p"\s*:\s*"([\d,]+)"'
+    ]
 
-    caption = (
-        message.get("caption")
-        or message.get("text")
-        or ""
-    )
+    for pattern in patterns:
+        m = re.search(pattern, html)
 
-    weight, labor = (
-        extract_weight_and_labor(
-            caption
-        )
-    )
+        if not m:
+            continue
 
-    if weight is None or labor is None:
-
-        print(
-            "Weight/labor not found",
-            flush=True
+        n = int(
+            m.group(1).replace(",", "")
         )
 
-        return
+        if n > 100_000_000:
+            n //= 10
 
-    print(
-        f"PRODUCT FOUND: "
-        f"weight={weight} "
-        f"labor={labor}",
-        flush=True
-    )
+        if 1_000_000 < n < 100_000_000:
+            return n
 
-    add_buttons_to_post(
-        chat_id,
-        message_id,
-        weight,
-        labor
+    raise RuntimeError(
+        "Gold price not found"
     )
 
 
-# -----------------------------
-# جواب دکمه
-# -----------------------------
-
-def answer_callback(
-    callback_id,
-    text
-):
-
-    return api_call(
+def answer_callback(callback_id, text):
+    bale(
         "answerCallbackQuery",
         {
-            "callback_query_id":
-            callback_id,
-
+            "callback_query_id": callback_id,
             "text": text,
-
             "show_alert": True
         }
     )
 
 
-# -----------------------------
-# کلیک روی دکمه‌ها
-# -----------------------------
+def process_callback(cb):
+    print(
+        ">>> CALLBACK RECEIVED <<<",
+        flush=True
+    )
+    print(
+        repr(cb),
+        flush=True
+    )
 
-def process_callback(callback):
-
-    callback_id = callback.get("id")
-    data = callback.get("data", "")
+    callback_id = cb.get("id")
+    data = cb.get("data") or ""
 
     if not callback_id:
         return
 
-    print(
-        "CALLBACK:",
-        data,
-        flush=True
-    )
-
     try:
-
-        # -----------------
-        # قیمت طلا
-        # -----------------
-
         if data == "gold":
-
-            gold_price = get_gold_price()
-
-            text = (
-                "💰 قیمت آنلاین طلای ۱۸ عیار\n\n"
-                f"هر گرم: "
-                f"{gold_price:,} تومان\n\n"
-                "منبع: TGJU"
-            )
+            price = gold_price()
 
             answer_callback(
                 callback_id,
-                text
+                "💰 قیمت طلای ۱۸ عیار\n\n"
+                f"هر گرم: {price:,} تومان"
             )
-
             return
 
+        if data.startswith("price:"):
+            _, w, p = data.split(":")
 
-        # -----------------
-        # قیمت محصول
-        # -----------------
+            weight = float(w)
+            labor = float(p)
 
-        if data.startswith("product:"):
+            gram = gold_price()
 
-            parts = data.split(":")
-
-            if len(parts) != 3:
-                raise ValueError(
-                    "Invalid product data"
-                )
-
-            weight = float(parts[1])
-            labor = float(parts[2])
-
-            gold_price = get_gold_price()
-
-            raw_price = (
-                weight * gold_price
-            )
-
-            labor_amount = (
-                raw_price *
-                labor / 100
-            )
-
-            final_price = (
-                raw_price +
-                labor_amount
-            )
-
-            text = (
-                "💎 قیمت روز این محصول\n\n"
-
-                f"وزن: "
-                f"{weight:g} گرم\n"
-
-                f"اجرت: "
-                f"{labor:g}٪\n\n"
-
-                f"قیمت هر گرم طلا: "
-                f"{gold_price:,} تومان\n\n"
-
-                f"قیمت نهایی: "
-                f"{round(final_price):,} تومان"
-            )
+            raw = weight * gram
+            labor_value = raw * labor / 100
+            total = round(raw + labor_value)
 
             answer_callback(
                 callback_id,
-                text
+                "💎 قیمت روز محصول\n\n"
+                f"وزن: {weight:g} گرم\n"
+                f"اجرت: {labor:g}٪\n"
+                f"طلای ۱۸ عیار: {gram:,} تومان\n\n"
+                f"قیمت نهایی: {total:,} تومان"
             )
-
             return
-
 
         answer_callback(
             callback_id,
-            "درخواست نامعتبر است."
+            "دکمه نامعتبر است."
         )
 
-
     except Exception as e:
-
         print(
             "CALLBACK ERROR:",
             repr(e),
@@ -416,122 +246,81 @@ def process_callback(callback):
         try:
             answer_callback(
                 callback_id,
-                "⚠️ دریافت قیمت آنلاین ممکن نشد. لطفاً دوباره امتحان کنید."
+                "⚠️ دریافت قیمت ممکن نشد."
             )
-        except:
-            pass
+        except Exception as e2:
+            print(
+                "ANSWER ERROR:",
+                repr(e2),
+                flush=True
+            )
 
-
-# -----------------------------
-# اجرای ربات
-# -----------------------------
 
 def main():
-
     offset = 0
 
     print(
-        "=== SALAR JEWELRY PRICE BOT STARTED ===",
+        "=== SALAR BOT V2 STARTED ===",
         flush=True
     )
 
     while True:
-
         try:
-
-            response = requests.post(
+            r = requests.post(
                 f"{API}/getUpdates",
                 json={
                     "offset": offset,
-                    "timeout": 20
+                    "timeout": 20,
+                    "allowed_updates": [
+                        "message",
+                        "edited_message",
+                        "callback_query"
+                    ]
                 },
-                timeout=30
+                timeout=35
             )
 
-            data = response.json()
+            r.raise_for_status()
+            result = r.json()
 
-            if not data.get("ok"):
-
+            for update in result.get("result", []):
                 print(
-                    "BALE API ERROR:",
-                    data,
+                    "=== UPDATE ===",
+                    flush=True
+                )
+                print(
+                    repr(update),
                     flush=True
                 )
 
-                time.sleep(3)
-                continue
+                uid = update.get("update_id")
 
+                if uid is not None:
+                    offset = uid + 1
 
-            for update in data.get(
-                "result",
-                []
-            ):
+                cb = update.get("callback_query")
 
-                update_id = (
-                    update.get(
-                        "update_id"
-                    )
+                if cb:
+                    process_callback(cb)
+                    continue
+
+                msg = (
+                    update.get("message")
+                    or update.get("edited_message")
                 )
 
-                if update_id is not None:
-                    offset = update_id + 1
-
-
-                # کلیک روی دکمه
-                callback = update.get(
-                    "callback_query"
-                )
-
-                if callback:
-                    process_callback(
-                        callback
-                    )
-
-
-                # پست کانال
-                message = update.get(
-                    "message"
-                )
-
-                if message:
-                    process_channel_message(
-                        message
-                    )
-
-
-                channel_post = update.get(
-                    "channel_post"
-                )
-
-                if channel_post:
-                    process_channel_message(
-                        channel_post
-                    )
-
+                if msg:
+                    process_post(msg)
 
         except requests.exceptions.ReadTimeout:
             continue
 
-
-        except requests.exceptions.RequestException as e:
-
-            print(
-                "NETWORK ERROR:",
-                repr(e),
-                flush=True
-            )
-
-            time.sleep(3)
-
-
         except Exception as e:
-
             print(
-                "ERROR:",
+                "MAIN ERROR:",
                 repr(e),
                 flush=True
             )
-
             time.sleep(3)
 
 
