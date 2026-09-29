@@ -55,10 +55,10 @@ def get_product(text):
     if not weight_match or not labor_match:
         return None
 
-    weight = float(weight_match.group(1))
-    labor = float(labor_match.group(1))
-
-    return weight, labor
+    return (
+        float(weight_match.group(1)),
+        float(labor_match.group(1))
+    )
 
 
 def make_keyboard(weight, labor):
@@ -94,7 +94,6 @@ def get_gold_price():
     )
 
     r.raise_for_status()
-
     html = r.text
 
     patterns = [
@@ -117,16 +116,13 @@ def get_gold_price():
             match.group(1).replace(",", "")
         )
 
-        # اگر قیمت ریال بود، تبدیل به تومان
         if price > 100_000_000:
             price //= 10
 
         if 1_000_000 < price < 100_000_000:
             return price
 
-    raise RuntimeError(
-        "Gold price not found"
-    )
+    raise RuntimeError("Gold price not found")
 
 
 def answer_callback(callback_id, text):
@@ -144,20 +140,13 @@ def handle_callback(cb):
     callback_id = cb.get("id")
     data = cb.get("data") or ""
 
-    print(
-        "CALLBACK:",
-        data,
-        flush=True
-    )
+    print("CALLBACK:", data, flush=True)
 
     if not callback_id:
         return
 
     try:
-
-        # قیمت لحظه‌ای طلا
         if data == "gold":
-
             gram = get_gold_price()
 
             text = (
@@ -165,63 +154,39 @@ def handle_callback(cb):
                 f"🟡 هر گرم: {gram:,} تومان"
             )
 
-            answer_callback(
-                callback_id,
-                text
-            )
-
+            answer_callback(callback_id, text)
             return
 
-        # قیمت محصول
         if data.startswith("price:"):
-
             parts = data.split(":")
 
             if len(parts) != 3:
-                raise ValueError(
-                    "Invalid callback data"
-                )
+                raise ValueError("Invalid callback data")
 
             weight = float(parts[1])
             labor = float(parts[2])
 
             gram = get_gold_price()
 
-            gold_value = round(
-                weight * gram
-            )
+            gold_value = round(weight * gram)
 
+            # اجرت همچنان محاسبه می‌شود،
+            # فقط مبلغ آن در پنجره نمایش داده نمی‌شود.
             labor_value = round(
                 gold_value * labor / 100
             )
 
-            final_price = (
-                gold_value + labor_value
-            )
+            final_price = gold_value + labor_value
 
             text = (
                 "✨ قیمت روز محصول\n\n"
-                f"🟡 طلای ۱۸ عیار: "
-                f"{gram:,} تومان\n\n"
-
-                f"⚖️ وزن: "
-                f"{weight:g} گرم\n"
-
-                f"💎 اجرت: "
-                f"{labor:g}٪\n"
-
-                f"💵 اجرت به تومان: "
-                f"{labor_value:,} تومان\n\n"
-
-                f"💰 مبلغ نهایی: "
-                f"{final_price:,} تومان"
+                f"🟡 طلای ۱۸ عیار: {gram:,} تومان\n\n"
+                f"⚖️ وزن: {weight:g} گرم\n"
+                f"💎 اجرت: {labor:g}٪\n\n"
+                f"💰 مبلغ نهایی: {final_price:,} تومان"
             )
 
-            answer_callback(
-                callback_id,
-                text
-            )
-
+            answer_callback(callback_id, text)
             return
 
         answer_callback(
@@ -230,7 +195,6 @@ def handle_callback(cb):
         )
 
     except Exception as e:
-
         print(
             "CALLBACK ERROR:",
             repr(e),
@@ -251,14 +215,8 @@ def handle_callback(cb):
 
 
 def publish_product(msg):
-    """
-    محصولی که به خصوصی ربات ارسال می‌شود
-    در کانال منتشر می‌شود.
-    """
-
     chat = msg.get("chat") or {}
 
-    # پیام‌های خود کانال را دوباره منتشر نکن
     if chat.get("type") in (
         "channel",
         "group",
@@ -293,9 +251,7 @@ def publish_product(msg):
         )
         return
 
-    # بهترین کیفیت عکس
     photo = photos[-1]
-
     file_id = photo.get("file_id")
 
     if not file_id:
@@ -308,15 +264,11 @@ def publish_product(msg):
             "photo": file_id,
             "caption": caption,
             "reply_markup":
-                make_keyboard(
-                    weight,
-                    labor
-                )
+                make_keyboard(weight, labor)
         }
     )
 
     if result.get("ok"):
-
         api(
             "sendMessage",
             {
@@ -329,9 +281,6 @@ def publish_product(msg):
 
 
 def main():
-
-    # اگر webhook قدیمی وجود داشته باشد،
-    # polling بتواند کار کند
     try:
         api(
             "deleteWebhook",
@@ -354,9 +303,7 @@ def main():
     )
 
     while True:
-
         try:
-
             r = requests.post(
                 f"{API}/getUpdates",
                 json={
@@ -367,43 +314,29 @@ def main():
             )
 
             r.raise_for_status()
-
             response = r.json()
 
-            updates = response.get(
-                "result",
-                []
-            )
-
-            for update in updates:
-
+            for update in response.get("result", []):
                 print(
                     "UPDATE:",
                     repr(update),
                     flush=True
                 )
 
-                update_id = update.get(
-                    "update_id"
-                )
+                update_id = update.get("update_id")
 
                 if update_id is not None:
                     offset = update_id + 1
 
-                callback = update.get(
-                    "callback_query"
-                )
+                callback = update.get("callback_query")
 
                 if callback:
-                    handle_callback(
-                        callback
-                    )
+                    handle_callback(callback)
                     continue
 
                 msg = (
                     update.get("message")
-                    or
-                    update.get("edited_message")
+                    or update.get("edited_message")
                 )
 
                 if msg:
@@ -413,13 +346,11 @@ def main():
             continue
 
         except Exception as e:
-
             print(
                 "MAIN ERROR:",
                 repr(e),
                 flush=True
             )
-
             time.sleep(3)
 
 
