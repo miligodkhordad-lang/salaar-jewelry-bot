@@ -10,7 +10,8 @@ API = f"https://tapi.bale.ai/bot{TOKEN}"
 CHANNEL_ID = 5655498921
 TGJU = "https://www.tgju.org/profile/geram18"
 
-# آخرین قیمت معتبر طلا
+PRICE_FILE = "last_gold_price.txt"
+
 gold_price_cache = None
 gold_price_time = 0
 gold_lock = threading.Lock()
@@ -87,12 +88,75 @@ def make_keyboard(weight, labor):
     }
 
 
-def fetch_gold_price():
-    """
-    دریافت نرخ طلای ۱۸ عیار / 750 از TGJU
-    قیمت صفحه به ریال است و به تومان تبدیل می‌شود.
-    """
+def save_gold_price(price):
+    try:
+        with open(
+            PRICE_FILE,
+            "w",
+            encoding="utf-8"
+        ) as f:
+            f.write(str(price))
 
+        print(
+            "GOLD PRICE SAVED:",
+            f"{price:,}",
+            flush=True
+        )
+
+    except Exception as e:
+        print(
+            "SAVE PRICE ERROR:",
+            repr(e),
+            flush=True
+        )
+
+
+def load_gold_price():
+    global gold_price_cache
+    global gold_price_time
+
+    try:
+        if not os.path.exists(PRICE_FILE):
+            return False
+
+        with open(
+            PRICE_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
+            value = f.read().strip()
+
+        price = int(value)
+
+        if not (
+            1_000_000
+            < price
+            < 100_000_000
+        ):
+            return False
+
+        with gold_lock:
+            gold_price_cache = price
+            gold_price_time = time.time()
+
+        print(
+            "LAST GOLD PRICE LOADED:",
+            f"{price:,} toman",
+            flush=True
+        )
+
+        return True
+
+    except Exception as e:
+        print(
+            "LOAD PRICE ERROR:",
+            repr(e),
+            flush=True
+        )
+        return False
+
+
+def fetch_gold_price():
     r = requests.get(
         TGJU,
         headers={
@@ -119,6 +183,7 @@ def fetch_gold_price():
     )
 
     r.raise_for_status()
+
     html = r.text
 
     match = re.search(
@@ -135,7 +200,9 @@ def fetch_gold_price():
             "Current geram18 price not found"
         )
 
-    raw_price = normalize(match.group(1))
+    raw_price = normalize(
+        match.group(1)
+    )
 
     raw_price = (
         raw_price
@@ -154,16 +221,10 @@ def fetch_gold_price():
             f"Invalid TGJU price: {price_rial}"
         )
 
-    price_toman = price_rial // 10
-
-    return price_toman
+    return price_rial // 10
 
 
 def update_gold_price():
-    """
-    هر 60 ثانیه قیمت را در پس‌زمینه تازه می‌کند.
-    """
-
     global gold_price_cache
     global gold_price_time
 
@@ -175,6 +236,8 @@ def update_gold_price():
                 gold_price_cache = new_price
                 gold_price_time = time.time()
 
+            save_gold_price(new_price)
+
             print(
                 "GOLD CACHE UPDATED:",
                 f"{new_price:,} toman",
@@ -182,8 +245,6 @@ def update_gold_price():
             )
 
         except Exception as e:
-            # اگر TGJU موقتاً خطا داد،
-            # آخرین قیمت معتبر حفظ می‌شود.
             print(
                 "GOLD UPDATE ERROR:",
                 repr(e),
@@ -195,7 +256,10 @@ def update_gold_price():
 
 def get_cached_gold_price():
     with gold_lock:
-        return gold_price_cache, gold_price_time
+        return (
+            gold_price_cache,
+            gold_price_time
+        )
 
 
 def answer_callback(callback_id, text):
@@ -223,15 +287,15 @@ def handle_callback(cb):
         return
 
     try:
-        # اینجا دیگر هیچ درخواست اینترنتی به TGJU
-        # هنگام کلیک مشتری انجام نمی‌شود.
-        gram, updated_at = get_cached_gold_price()
+        gram, updated_at = (
+            get_cached_gold_price()
+        )
 
         if gram is None:
             answer_callback(
                 callback_id,
-                "⏳ قیمت طلا در حال دریافت است. "
-                "چند لحظه دیگر دوباره امتحان کنید."
+                "⌛ قیمت طلا هنوز دریافت نشده است. "
+                "لطفاً چند لحظه دیگر دوباره امتحان کنید."
             )
             return
 
@@ -262,8 +326,8 @@ def handle_callback(cb):
                 weight * gram
             )
 
-            # اجرت در مبلغ نهایی حساب می‌شود
-            # ولی مبلغ اجرت جداگانه نمایش داده نمی‌شود.
+            # اجرت در قیمت نهایی محاسبه می‌شود
+            # اما مبلغ اجرت جداگانه نمایش داده نمی‌شود
             labor_value = round(
                 gold_value * labor / 100
             )
@@ -403,7 +467,10 @@ def main():
             flush=True
         )
 
-    # دریافت قیمت در پس‌زمینه
+    # ابتدا آخرین قیمت ذخیره‌شده را بخوان
+    load_gold_price()
+
+    # سپس به‌روزرسانی TGJU در پس‌زمینه
     gold_thread = threading.Thread(
         target=update_gold_price,
         daemon=True
@@ -477,7 +544,6 @@ def main():
                 repr(e),
                 flush=True
             )
-
             time.sleep(2)
 
 
