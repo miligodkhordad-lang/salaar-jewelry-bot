@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import threading
 import requests
 
 TOKEN = os.environ["BOT_TOKEN"]
@@ -9,12 +10,17 @@ API = f"https://tapi.bale.ai/bot{TOKEN}"
 CHANNEL_ID = 5655498921
 TGJU = "https://www.tgju.org/profile/geram18"
 
+# آخرین قیمت معتبر طلا
+gold_price_cache = None
+gold_price_time = 0
+gold_lock = threading.Lock()
+
 
 def api(method, data):
     r = requests.post(
         f"{API}/{method}",
         json=data,
-        timeout=30
+        timeout=15
     )
 
     print(
@@ -81,13 +87,10 @@ def make_keyboard(weight, labor):
     }
 
 
-def get_gold_price():
+def fetch_gold_price():
     """
-    دریافت نرخ جاری طلای ۱۸ عیار / 750
-    از صفحه اختصاصی TGJU.
-
-    قیمت TGJU در این صفحه ریال است
-    و برای نمایش در ربات به تومان تبدیل می‌شود.
+    دریافت نرخ طلای ۱۸ عیار / 750 از TGJU
+    قیمت صفحه به ریال است و به تومان تبدیل می‌شود.
     """
 
     r = requests.get(
@@ -112,14 +115,12 @@ def get_gold_price():
         params={
             "_": int(time.time())
         },
-        timeout=20
+        timeout=10
     )
 
     r.raise_for_status()
-
     html = r.text
 
-    # فقط فیلد نرخ جاری صفحه geram18
     match = re.search(
         r'data-col=["\']'
         r'info\.last_trade\.PDrCotVal'
@@ -134,9 +135,7 @@ def get_gold_price():
             "Current geram18 price not found"
         )
 
-    raw_price = normalize(
-        match.group(1)
-    )
+    raw_price = normalize(match.group(1))
 
     raw_price = (
         raw_price
@@ -146,7 +145,6 @@ def get_gold_price():
 
     price_rial = int(raw_price)
 
-    # کنترل منطقی نرخ
     if not (
         100_000_000
         < price_rial
@@ -156,17 +154,48 @@ def get_gold_price():
             f"Invalid TGJU price: {price_rial}"
         )
 
-    # ریال -> تومان
     price_toman = price_rial // 10
 
-    print(
-        "TGJU GERAM18:",
-        f"{price_rial:,} rial = "
-        f"{price_toman:,} toman",
-        flush=True
-    )
-
     return price_toman
+
+
+def update_gold_price():
+    """
+    هر 60 ثانیه قیمت را در پس‌زمینه تازه می‌کند.
+    """
+
+    global gold_price_cache
+    global gold_price_time
+
+    while True:
+        try:
+            new_price = fetch_gold_price()
+
+            with gold_lock:
+                gold_price_cache = new_price
+                gold_price_time = time.time()
+
+            print(
+                "GOLD CACHE UPDATED:",
+                f"{new_price:,} toman",
+                flush=True
+            )
+
+        except Exception as e:
+            # اگر TGJU موقتاً خطا داد،
+            # آخرین قیمت معتبر حفظ می‌شود.
+            print(
+                "GOLD UPDATE ERROR:",
+                repr(e),
+                flush=True
+            )
+
+        time.sleep(60)
+
+
+def get_cached_gold_price():
+    with gold_lock:
+        return gold_price_cache, gold_price_time
 
 
 def answer_callback(callback_id, text):
@@ -194,10 +223,19 @@ def handle_callback(cb):
         return
 
     try:
+        # اینجا دیگر هیچ درخواست اینترنتی به TGJU
+        # هنگام کلیک مشتری انجام نمی‌شود.
+        gram, updated_at = get_cached_gold_price()
+
+        if gram is None:
+            answer_callback(
+                callback_id,
+                "⏳ قیمت طلا در حال دریافت است. "
+                "چند لحظه دیگر دوباره امتحان کنید."
+            )
+            return
 
         if data == "gold":
-            gram = get_gold_price()
-
             text = (
                 "💰 قیمت روز طلای ۱۸ عیار\n\n"
                 f"🟡 هر گرم: {gram:,} تومان"
@@ -220,14 +258,12 @@ def handle_callback(cb):
             weight = float(parts[1])
             labor = float(parts[2])
 
-            gram = get_gold_price()
-
             gold_value = round(
                 weight * gram
             )
 
-            # اجرت محاسبه می‌شود
-            # اما مبلغ جداگانه آن نمایش داده نمی‌شود
+            # اجرت در مبلغ نهایی حساب می‌شود
+            # ولی مبلغ اجرت جداگانه نمایش داده نمی‌شود.
             labor_value = round(
                 gold_value * labor / 100
             )
@@ -273,7 +309,7 @@ def handle_callback(cb):
         try:
             answer_callback(
                 callback_id,
-                "⚠️ دریافت قیمت لحظه‌ای ممکن نشد."
+                "⚠️ دریافت قیمت ممکن نشد."
             )
         except Exception as e2:
             print(
@@ -367,10 +403,18 @@ def main():
             flush=True
         )
 
+    # دریافت قیمت در پس‌زمینه
+    gold_thread = threading.Thread(
+        target=update_gold_price,
+        daemon=True
+    )
+
+    gold_thread.start()
+
     offset = 0
 
     print(
-        "=== SALAR JEWELRY FINAL BOT STARTED ===",
+        "=== SALAR JEWELRY FAST BOT STARTED ===",
         flush=True
     )
 
@@ -382,11 +426,10 @@ def main():
                     "offset": offset,
                     "timeout": 20
                 },
-                timeout=35
+                timeout=30
             )
 
             r.raise_for_status()
-
             response = r.json()
 
             for update in response.get(
@@ -434,7 +477,8 @@ def main():
                 repr(e),
                 flush=True
             )
-            time.sleep(3)
+
+            time.sleep(2)
 
 
 if __name__ == "__main__":
