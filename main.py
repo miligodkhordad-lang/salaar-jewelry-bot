@@ -1,551 +1,197 @@
-import os
-import re
-import time
-import threading
-import requests
+import os, re, time, threading, requests
 
-TOKEN = os.environ["BOT_TOKEN"]
-API = f"https://tapi.bale.ai/bot{TOKEN}"
+TOKEN = os.environ['BOT_TOKEN']
+API = f'https://tapi.bale.ai/bot{TOKEN}'
+CHANNEL_ID = int(os.getenv('CHANNEL_ID', '5655498921'))
+OWNER_ID = int(os.getenv('OWNER_ID', '0'))  # Required for editing/publishing
+TGJU = 'https://www.tgju.org/profile/geram18'
 
-CHANNEL_ID = 5655498921
-TGJU = "https://www.tgju.org/profile/geram18"
-
-PRICE_FILE = "last_gold_price.txt"
-
-gold_price_cache = None
-gold_price_time = 0
-gold_lock = threading.Lock()
+session = requests.Session()
+editing = {}  # private chat id -> channel message id
+last_price = None
+last_update = 0
+lock = threading.Lock()
 
 
-def api(method, data):
-    r = requests.post(
-        f"{API}/{method}",
-        json=data,
-        timeout=15
-    )
-
-    print(
-        "BALE:",
-        method,
-        r.status_code,
-        r.text,
-        flush=True
-    )
-
-    r.raise_for_status()
-    return r.json()
+def api(method, data, timeout=15):
+    response = session.post(f'{API}/{method}', json=data, timeout=timeout)
+    result = response.json()
+    if not result.get('ok'):
+        raise RuntimeError(f'{method}: {result}')
+    return result.get('result')
 
 
-def normalize(text):
-    table = str.maketrans(
-        "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩٫،",
-        "01234567890123456789.."
-    )
-    return (text or "").translate(table)
+def digits(value):
+    return str(value or '').translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩٫', '01234567890123456789.'))
 
 
-def get_product(text):
-    text = normalize(text)
-
-    weight_match = re.search(
-        r"وزن\s*[:：]?\s*\*?\s*"
-        r"([0-9]+(?:\.[0-9]+)?)",
-        text
-    )
-
-    labor_match = re.search(
-        r"اجرت(?:\s*فقط)?\s*[:：]?\s*\*?\s*"
-        r"([0-9]+(?:\.[0-9]+)?)\s*[٪%]?",
-        text
-    )
-
-    if not weight_match or not labor_match:
+def product(text):
+    t = digits(text)
+    w = re.search(r'وزن\s*[:：]?\s*([0-9]+(?:\.[0-9]+)?)', t)
+    a = re.search(r'اجرت(?:\s*فقط)?\s*[:：]?\s*([0-9]+(?:\.[0-9]+)?)', t)
+    if not (w and a):
         return None
-
-    return (
-        float(weight_match.group(1)),
-        float(labor_match.group(1))
-    )
+    return float(w.group(1)), float(a.group(1))
 
 
-def make_keyboard(weight, labor):
-    return {
-        "inline_keyboard": [
-            [
-                {
-                    "text": "💰 مشاهده قیمت روز این محصول",
-                    "callback_data":
-                    f"price:{weight:g}:{labor:g}"
-                }
-            ],
-            [
-                {
-                    "text": "💰 مشاهده قیمت طلا",
-                    "callback_data": "gold"
-                }
-            ]
-        ]
-    }
+def keyboard(weight, labor):
+    return {'inline_keyboard': [
+        [{'text': '💰 مشاهده قیمت روز این محصول', 'callback_data': f'price:{weight:g}:{labor:g}'}],
+        [{'text': '💰 مشاهده قیمت طلا', 'callback_data': 'gold'}]
+    ]}
 
 
-def save_gold_price(price):
-    try:
-        with open(
-            PRICE_FILE,
-            "w",
-            encoding="utf-8"
-        ) as f:
-            f.write(str(price))
-
-        print(
-            "GOLD PRICE SAVED:",
-            f"{price:,}",
-            flush=True
-        )
-
-    except Exception as e:
-        print(
-            "SAVE PRICE ERROR:",
-            repr(e),
-            flush=True
-        )
-
-
-def load_gold_price():
-    global gold_price_cache
-    global gold_price_time
-
-    try:
-        if not os.path.exists(PRICE_FILE):
-            return False
-
-        with open(
-            PRICE_FILE,
-            "r",
-            encoding="utf-8"
-        ) as f:
-            value = f.read().strip()
-
-        price = int(value)
-
-        if not (
-            1_000_000
-            < price
-            < 100_000_000
-        ):
-            return False
-
-        with gold_lock:
-            gold_price_cache = price
-            gold_price_time = time.time()
-
-        print(
-            "LAST GOLD PRICE LOADED:",
-            f"{price:,} toman",
-            flush=True
-        )
-
-        return True
-
-    except Exception as e:
-        print(
-            "LOAD PRICE ERROR:",
-            repr(e),
-            flush=True
-        )
-        return False
-
-
-def fetch_gold_price():
-    r = requests.get(
-        TGJU,
-        headers={
-            "User-Agent":
-            "Mozilla/5.0 (Linux; Android 15) "
-            "AppleWebKit/537.36 "
-            "(KHTML, like Gecko) "
-            "Chrome/140.0 Mobile Safari/537.36",
-
-            "Accept":
-            "text/html,application/xhtml+xml,"
-            "application/xml;q=0.9,*/*;q=0.8",
-
-            "Accept-Language":
-            "fa-IR,fa;q=0.9,en;q=0.7",
-
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache"
-        },
-        params={
-            "_": int(time.time())
-        },
-        timeout=10
-    )
-
-    r.raise_for_status()
-
-    html = r.text
-
-    match = re.search(
-        r'data-col=["\']'
-        r'info\.last_trade\.PDrCotVal'
-        r'["\'][^>]*>\s*'
-        r'([0-9۰-۹٠-٩,٬]+)',
-        html,
-        re.IGNORECASE
-    )
-
-    if not match:
-        raise RuntimeError(
-            "Current geram18 price not found"
-        )
-
-    raw_price = normalize(
-        match.group(1)
-    )
-
-    raw_price = (
-        raw_price
-        .replace(",", "")
-        .replace("٬", "")
-    )
-
-    price_rial = int(raw_price)
-
-    if not (
-        100_000_000
-        < price_rial
-        < 1_000_000_000
-    ):
-        raise RuntimeError(
-            f"Invalid TGJU price: {price_rial}"
-        )
-
-    return price_rial // 10
-
-
-def update_gold_price():
-    global gold_price_cache
-    global gold_price_time
-
+def gold_worker():
+    global last_price, last_update
     while True:
         try:
-            new_price = fetch_gold_price()
-
-            with gold_lock:
-                gold_price_cache = new_price
-                gold_price_time = time.time()
-
-            save_gold_price(new_price)
-
-            print(
-                "GOLD CACHE UPDATED:",
-                f"{new_price:,} toman",
-                flush=True
-            )
-
-        except Exception as e:
-            print(
-                "GOLD UPDATE ERROR:",
-                repr(e),
-                flush=True
-            )
-
+            response = requests.get(TGJU, headers={'User-Agent': 'Mozilla/5.0'}, timeout=(4, 8))
+            response.raise_for_status()
+            match = re.search(r'data-col=["\']info\.last_trade\.PDrCotVal["\'][^>]*>\s*([0-9۰-۹٠-٩,٬]+)', response.text, re.I)
+            if not match:
+                raise ValueError('TGJU price field not found')
+            rial = int(digits(match.group(1)).replace(',', '').replace('٬', ''))
+            if not 100_000_000 < rial < 1_000_000_000:
+                raise ValueError('Invalid rial value')
+            with lock:
+                last_price = rial // 10
+                last_update = time.time()
+            print('GOLD UPDATED', last_price, flush=True)
+        except Exception as exc:
+            print('GOLD ERROR', repr(exc), flush=True)
         time.sleep(60)
 
 
-def get_cached_gold_price():
-    with gold_lock:
-        return (
-            gold_price_cache,
-            gold_price_time
-        )
+def send(chat_id, text):
+    return api('sendMessage', {'chat_id': chat_id, 'text': text})
 
 
-def answer_callback(callback_id, text):
-    return api(
-        "answerCallbackQuery",
-        {
-            "callback_query_id": callback_id,
-            "text": text,
-            "show_alert": True
-        }
-    )
-
-
-def handle_callback(cb):
-    callback_id = cb.get("id")
-    data = cb.get("data") or ""
-
-    print(
-        "CALLBACK:",
-        data,
-        flush=True
-    )
-
-    if not callback_id:
-        return
-
-    try:
-        gram, updated_at = (
-            get_cached_gold_price()
-        )
-
-        if gram is None:
-            answer_callback(
-                callback_id,
-                "⌛ قیمت طلا هنوز دریافت نشده است. "
-                "لطفاً چند لحظه دیگر دوباره امتحان کنید."
-            )
-            return
-
-        if data == "gold":
-            text = (
-                "💰 قیمت روز طلای ۱۸ عیار\n\n"
-                f"🟡 هر گرم: {gram:,} تومان"
-            )
-
-            answer_callback(
-                callback_id,
-                text
-            )
-            return
-
-        if data.startswith("price:"):
-            parts = data.split(":")
-
-            if len(parts) != 3:
-                raise ValueError(
-                    "Invalid callback data"
-                )
-
-            weight = float(parts[1])
-            labor = float(parts[2])
-
-            gold_value = round(
-                weight * gram
-            )
-
-            # اجرت در قیمت نهایی محاسبه می‌شود
-            # اما مبلغ اجرت جداگانه نمایش داده نمی‌شود
-            labor_value = round(
-                gold_value * labor / 100
-            )
-
-            final_price = (
-                gold_value + labor_value
-            )
-
-            text = (
-                "✨ قیمت روز محصول\n\n"
-
-                f"🟡 طلای ۱۸ عیار: "
-                f"{gram:,} تومان\n\n"
-
-                f"⚖️ وزن: "
-                f"{weight:g} گرم\n"
-
-                f"💎 اجرت: "
-                f"{labor:g}٪\n\n"
-
-                f"💰 مبلغ نهایی: "
-                f"{final_price:,} تومان"
-            )
-
-            answer_callback(
-                callback_id,
-                text
-            )
-            return
-
-        answer_callback(
-            callback_id,
-            "دکمه معتبر نیست."
-        )
-
-    except Exception as e:
-        print(
-            "CALLBACK ERROR:",
-            repr(e),
-            flush=True
-        )
-
+def callback(cb):
+    cid = cb.get('id')
+    data = cb.get('data') or ''
+    with lock:
+        gram, timestamp = last_price, last_update
+    if not gram or time.time() - timestamp > 900:
+        text = '⚠️ نرخ معتبر و تازه طلا فعلاً در دسترس نیست. لطفاً بعداً امتحان کنید.'
+    elif data == 'gold':
+        text = f'💰 قیمت طلای ۱۸ عیار\n\n🟡 هر گرم: {gram:,} تومان'
+    elif data.startswith('price:'):
         try:
-            answer_callback(
-                callback_id,
-                "⚠️ دریافت قیمت ممکن نشد."
-            )
-        except Exception as e2:
-            print(
-                "ANSWER ERROR:",
-                repr(e2),
-                flush=True
-            )
+            _, w, a = data.split(':')
+            w, a = float(w), float(a)
+            total = round(w * gram * (1 + a / 100))
+            text = (f'✨ قیمت روز محصول\n\n🟡 طلای ۱۸ عیار: {gram:,} تومان\n'
+                    f'⚖️ وزن: {w:g} گرم\n💎 اجرت: {a:g}٪\n\n💰 مبلغ نهایی: {total:,} تومان')
+        except (ValueError, TypeError):
+            text = 'اطلاعات این دکمه نامعتبر است.'
+    else:
+        text = 'دکمه نامعتبر است.'
+    api('answerCallbackQuery', {'callback_query_id': cid, 'text': text, 'show_alert': True})
 
 
-def publish_product(msg):
-    chat = msg.get("chat") or {}
-
-    if chat.get("type") in (
-        "channel",
-        "group",
-        "supergroup"
-    ):
+def edit_existing(chat_id, message_id, msg):
+    caption = msg.get('caption') or msg.get('text') or ''
+    photos = msg.get('photo') or []
+    parsed = product(caption) if caption else None
+    if caption and not parsed:
+        send(chat_id, '❌ در متن جدید «وزن» و «اجرت» را بنویس. مثال:\nوزن: ۰.۳۰ گرم\nاجرت فقط: ۵٪')
         return
-
-    caption = (
-        msg.get("caption")
-        or msg.get("text")
-        or ""
-    )
-
-    product = get_product(caption)
-
-    if not product:
+    if not caption and not photos:
+        send(chat_id, 'متن کامل جدید یا عکس جدید (با کپشن کامل) بفرست.')
         return
+    # A new photo without caption retains the old caption, but its old keyboard is kept.
+    # If caption is supplied, the callback data is updated to match it.
+    markup = keyboard(*parsed) if parsed else None
+    if photos:
+        payload = {'chat_id': CHANNEL_ID, 'message_id': message_id,
+                   'media': {'type': 'photo', 'media': photos[-1]['file_id']}}
+        if caption:
+            payload['media']['caption'] = caption
+        if markup:
+            payload['reply_markup'] = markup
+        api('editMessageMedia', payload)
+    else:
+        api('editMessageCaption', {'chat_id': CHANNEL_ID, 'message_id': message_id,
+                                   'caption': caption, 'reply_markup': markup})
+    editing.pop(chat_id, None)
+    send(chat_id, '✅ پست قبلی کانال ویرایش شد. اگر دکمه قیمت داشت، مشخصاتش هم اصلاح شد.')
 
-    weight, labor = product
 
-    photos = msg.get("photo") or []
-
-    if not photos:
-        api(
-            "sendMessage",
-            {
-                "chat_id": chat.get("id"),
-                "text":
-                "⚠️ لطفاً عکس محصول را همراه "
-                "با وزن و اجرت برای من ارسال کنید."
-            }
-        )
+def handle_message(msg):
+    chat = msg.get('chat') or {}
+    if chat.get('type') != 'private':
         return
-
-    photo = photos[-1]
-    file_id = photo.get("file_id")
-
-    if not file_id:
+    chat_id = chat.get('id')
+    sender_id = (msg.get('from') or {}).get('id')
+    text = (msg.get('text') or '').strip()
+    if text == '/id':
+        send(chat_id, f'شناسه عددی حساب شما: {sender_id}\nاین عدد را به‌عنوان OWNER_ID در GitHub Secrets ثبت کن.')
         return
-
-    result = api(
-        "sendPhoto",
-        {
-            "chat_id": CHANNEL_ID,
-            "photo": file_id,
-            "caption": caption,
-            "reply_markup":
-                make_keyboard(
-                    weight,
-                    labor
-                )
-        }
-    )
-
-    if result.get("ok"):
-        api(
-            "sendMessage",
-            {
-                "chat_id": chat.get("id"),
-                "text":
-                "✅ محصول با دکمه قیمت "
-                "در کانال منتشر شد."
-            }
-        )
+    if not OWNER_ID:
+        send(chat_id, '⚠️ ابتدا Secret با نام OWNER_ID را در GitHub تنظیم کن. برای دریافت عدد /id را بفرست.')
+        return
+    if sender_id != OWNER_ID:
+        send(chat_id, '⛔ دسترسی انتشار و ویرایش فقط برای مدیر فروشگاه است.')
+        return
+    if text == '/cancel':
+        editing.pop(chat_id, None)
+        send(chat_id, 'ویرایش لغو شد.')
+        return
+    if text.startswith('/edit'):
+        parts = digits(text).split()
+        if len(parts) != 2 or not parts[1].isdigit():
+            send(chat_id, 'برای ویرایش بنویس:\n/edit 176\nبه جای 176 شناسه پیام پست کانال را وارد کن.')
+            return
+        editing[chat_id] = int(parts[1])
+        send(chat_id, '✏️ حالا کپشن کامل جدید یا عکس جدید را بفرست. برای انصراف /cancel را بزن.\n'
+                      'توجه: اگر عکس را تغییر می‌دهی، بهتر است کپشن کامل را هم همراه آن بفرستی.')
+        return
+    if chat_id in editing:
+        try:
+            edit_existing(chat_id, editing[chat_id], msg)
+        except Exception as exc:
+            print('EDIT ERROR', repr(exc), flush=True)
+            send(chat_id, '❌ ویرایش انجام نشد. ممکن است بله تغییر عکس این نوع پست را نپذیرد یا شناسه پیام اشتباه باشد. خطا در Actions ثبت شد.')
+        return
+    caption = msg.get('caption') or msg.get('text') or ''
+    parsed = product(caption)
+    photos = msg.get('photo') or []
+    if parsed and photos:
+        try:
+            result = api('sendPhoto', {'chat_id': CHANNEL_ID, 'photo': photos[-1]['file_id'],
+                                       'caption': caption, 'reply_markup': keyboard(*parsed)})
+            mid = result.get('message_id') if isinstance(result, dict) else None
+            send(chat_id, f'✅ محصول منتشر شد.\nشناسه پیام: {mid}\nبرای ویرایش بعدی: /edit {mid}')
+        except Exception as exc:
+            print('PUBLISH ERROR', repr(exc), flush=True)
+            send(chat_id, '❌ انتشار ناموفق بود. گزارش خطا را در GitHub Actions ببین.')
+    else:
+        send(chat_id, 'برای انتشار: عکس با کپشن وزن و اجرت بفرست.\nبرای ویرایش: /edit شماره_پیام\nبرای دریافت شناسه خودت: /id')
 
 
 def main():
-    try:
-        api(
-            "deleteWebhook",
-            {
-                "drop_pending_updates": False
-            }
-        )
-    except Exception as e:
-        print(
-            "DELETE WEBHOOK:",
-            repr(e),
-            flush=True
-        )
-
-    # ابتدا آخرین قیمت ذخیره‌شده را بخوان
-    load_gold_price()
-
-    # سپس به‌روزرسانی TGJU در پس‌زمینه
-    gold_thread = threading.Thread(
-        target=update_gold_price,
-        daemon=True
-    )
-
-    gold_thread.start()
-
+    api('deleteWebhook', {'drop_pending_updates': False})
+    threading.Thread(target=gold_worker, daemon=True).start()
     offset = 0
-
-    print(
-        "=== SALAR JEWELRY FAST BOT STARTED ===",
-        flush=True
-    )
-
+    print('SALAR EDIT BOT STARTED', flush=True)
     while True:
         try:
-            r = requests.post(
-                f"{API}/getUpdates",
-                json={
-                    "offset": offset,
-                    "timeout": 20
-                },
-                timeout=30
-            )
-
-            r.raise_for_status()
-            response = r.json()
-
-            for update in response.get(
-                "result",
-                []
-            ):
-                print(
-                    "UPDATE:",
-                    repr(update),
-                    flush=True
-                )
-
-                update_id = update.get(
-                    "update_id"
-                )
-
-                if update_id is not None:
-                    offset = update_id + 1
-
-                callback = update.get(
-                    "callback_query"
-                )
-
-                if callback:
-                    handle_callback(
-                        callback
-                    )
-                    continue
-
-                msg = (
-                    update.get("message")
-                    or
-                    update.get("edited_message")
-                )
-
-                if msg:
-                    publish_product(msg)
-
-        except requests.exceptions.ReadTimeout:
-            continue
-
-        except Exception as e:
-            print(
-                "MAIN ERROR:",
-                repr(e),
-                flush=True
-            )
+            updates = api('getUpdates', {'offset': offset, 'timeout': 20}, timeout=30)
+            for update in updates or []:
+                offset = max(offset, update['update_id'] + 1)
+                try:
+                    if update.get('callback_query'):
+                        callback(update['callback_query'])
+                    else:
+                        msg = update.get('message') or update.get('edited_message')
+                        if msg:
+                            handle_message(msg)
+                except Exception as exc:
+                    print('UPDATE ERROR', repr(exc), flush=True)
+        except Exception as exc:
+            print('POLL ERROR', repr(exc), flush=True)
             time.sleep(2)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
