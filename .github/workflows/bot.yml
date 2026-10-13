@@ -5,6 +5,10 @@ on:
   schedule:
     - cron: "0 */5 * * *"
 
+concurrency:
+  group: salaar-jewelry-bot
+  cancel-in-progress: true
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -25,4 +29,5 @@ jobs:
       - name: Run Bale bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          OWNER_ID: ${{ secrets.OWNER_ID }}
         run: python main.py
