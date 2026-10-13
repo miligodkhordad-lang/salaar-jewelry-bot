@@ -4,39 +4,64 @@ import time
 import threading
 import requests
 
+# =====================================
+# SALAR JEWELRY BALE BOT
+# =====================================
+
 TOKEN = os.environ["BOT_TOKEN"]
+
 API = f"https://tapi.bale.ai/bot{TOKEN}"
 
-CHANNEL_ID = int(os.getenv("CHANNEL_ID", "5655498921"))
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+CHANNEL_ID = int(
+    os.getenv("CHANNEL_ID", "5655498921")
+)
+
+OWNER_ID = int(
+    os.getenv("OWNER_ID", "0")
+)
 
 TGJU = "https://www.tgju.org/profile/geram18"
 
 session = requests.Session()
 
 editing = {}
+
 last_price = None
 last_update = 0
+
 lock = threading.Lock()
 
 
-def api(method, data, timeout=15):
+# =====================================
+# BALE API
+# =====================================
+
+def api(method, data, timeout=20):
+
     response = session.post(
         f"{API}/{method}",
         json=data,
         timeout=timeout
     )
+
     response.raise_for_status()
 
     result = response.json()
 
     if not result.get("ok"):
-        raise RuntimeError(f"{method}: {result}")
+        raise RuntimeError(
+            f"{method}: {result}"
+        )
 
     return result.get("result")
 
 
+# =====================================
+# PERSIAN DIGITS
+# =====================================
+
 def digits(value):
+
     return str(value or "").translate(
         str.maketrans(
             "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩٫",
@@ -45,61 +70,92 @@ def digits(value):
     )
 
 
+# =====================================
+# PRODUCT WEIGHT AND LABOR
+# =====================================
+
 def product(text):
+
     t = digits(text)
 
-    w = re.search(
+    weight = re.search(
         r"وزن\s*[:：]?\s*([0-9]+(?:\.[0-9]+)?)",
         t
     )
 
-    a = re.search(
+    labor = re.search(
         r"اجرت(?:\s*فقط)?\s*[:：]?\s*([0-9]+(?:\.[0-9]+)?)",
         t
     )
 
-    if not (w and a):
+    if not weight or not labor:
         return None
 
-    return float(w.group(1)), float(a.group(1))
+    return (
+        float(weight.group(1)),
+        float(labor.group(1))
+    )
 
+
+# =====================================
+# PRICE BUTTONS
+# =====================================
 
 def keyboard(weight, labor):
+
     return {
         "inline_keyboard": [
-            [{
-                "text": "💰 مشاهده قیمت روز این محصول",
-                "callback_data": f"price:{weight:g}:{labor:g}"
-            }],
-            [{
-                "text": "💰 مشاهده قیمت طلا",
-                "callback_data": "gold"
-            }]
+            [
+                {
+                    "text": "💰 مشاهده قیمت روز این محصول",
+                    "callback_data":
+                        f"price:{weight:g}:{labor:g}"
+                }
+            ],
+            [
+                {
+                    "text": "💰 مشاهده قیمت طلا",
+                    "callback_data": "gold"
+                }
+            ]
         ]
     }
 
 
+# =====================================
+# GOLD PRICE
+# =====================================
+
 def gold_worker():
-    global last_price, last_update
+
+    global last_price
+    global last_update
 
     while True:
+
         try:
+
             response = requests.get(
                 TGJU,
-                headers={"User-Agent": "Mozilla/5.0"},
+                headers={
+                    "User-Agent": "Mozilla/5.0"
+                },
                 timeout=(4, 8)
             )
 
             response.raise_for_status()
 
             match = re.search(
-                r'data-col=["\']info\.last_trade\.PDrCotVal["\'][^>]*>\s*([0-9۰-۹٠-٩,٬]+)',
+                r'data-col=["\']info\.last_trade\.PDrCotVal'
+                r'["\'][^>]*>\s*([0-9۰-۹٠-٩,٬]+)',
                 response.text,
                 re.I
             )
 
             if not match:
-                raise ValueError("TGJU price field not found")
+                raise ValueError(
+                    "TGJU price field not found"
+                )
 
             rial = int(
                 digits(match.group(1))
@@ -108,21 +164,38 @@ def gold_worker():
             )
 
             if not 100_000_000 < rial < 1_000_000_000:
-                raise ValueError("Invalid rial value")
+                raise ValueError(
+                    "Invalid gold price"
+                )
 
             with lock:
+
                 last_price = rial // 10
                 last_update = time.time()
 
-            print("GOLD UPDATED", last_price, flush=True)
+            print(
+                "GOLD UPDATED",
+                last_price,
+                flush=True
+            )
 
         except Exception as exc:
-            print("GOLD ERROR", repr(exc), flush=True)
+
+            print(
+                "GOLD ERROR",
+                repr(exc),
+                flush=True
+            )
 
         time.sleep(60)
 
 
+# =====================================
+# SEND PRIVATE MESSAGE
+# =====================================
+
 def send(chat_id, text):
+
     return api(
         "sendMessage",
         {
@@ -132,28 +205,38 @@ def send(chat_id, text):
     )
 
 
+# =====================================
+# PRICE CALLBACKS
+# =====================================
+
 def callback(cb):
-    cid = cb.get("id")
+
+    callback_id = cb.get("id")
     data = cb.get("data") or ""
 
     with lock:
+
         gram = last_price
         timestamp = last_update
 
     if not gram or time.time() - timestamp > 900:
+
         text = (
-            "⚠️ نرخ معتبر و تازه طلا فعلاً در دسترس نیست."
-            " لطفاً بعداً امتحان کنید."
+            "⚠️ نرخ معتبر و تازه طلا "
+            "فعلاً در دسترس نیست."
         )
 
     elif data == "gold":
+
         text = (
             "💰 قیمت طلای ۱۸ عیار\n\n"
             f"🟡 هر گرم: {gram:,} تومان"
         )
 
     elif data.startswith("price:"):
+
         try:
+
             _, w, a = data.split(":")
 
             w = float(w)
@@ -172,178 +255,254 @@ def callback(cb):
             )
 
         except (ValueError, TypeError):
-            text = "اطلاعات این دکمه نامعتبر است."
+
+            text = "اطلاعات دکمه نامعتبر است."
 
     else:
+
         text = "دکمه نامعتبر است."
 
     try:
+
         api(
             "answerCallbackQuery",
             {
-                "callback_query_id": cid,
+                "callback_query_id": callback_id,
                 "text": text,
                 "show_alert": True
             }
         )
+
     except Exception as exc:
-        print("CALLBACK ERROR", repr(exc), flush=True)
+
+        print(
+            "CALLBACK ERROR",
+            repr(exc),
+            flush=True
+        )
 
 
-def verify_edit(result, message_id, caption):
-    """
-    Check the message returned by Bale.
-    """
+# =====================================
+# EDIT RESPONSE DIAGNOSTICS
+# =====================================
+
+def inspect_edit_result(result, message_id):
 
     print(
-        "EDIT API RESULT",
-        repr(result)[:3000],
+        "EDIT API RESULT:",
+        repr(result)[:2000],
         flush=True
     )
 
+    if result is True:
+
+        return (
+            "⚠️ بله پاسخ موفق داده، "
+            "ولی اطلاعات پیام را برنگردانده است."
+        )
+
     if not isinstance(result, dict):
-        return False, "پاسخ ویرایش شامل اطلاعات پیام نیست."
+
+        return (
+            "⚠️ پاسخ ویرایش دریافت شد، "
+            "اما قابل تأیید نیست."
+        )
 
     returned_id = result.get("message_id")
 
-    if str(returned_id) != str(message_id):
-        return False, (
-            f"شناسه برگشتی {returned_id} "
-            f"با شناسه درخواستی {message_id} فرق دارد."
+    returned_chat = (
+        result.get("chat") or {}
+    ).get("id")
+
+    print(
+        "EDIT CHECK:",
+        "requested_message=", message_id,
+        "returned_message=", returned_id,
+        "requested_chat=", CHANNEL_ID,
+        "returned_chat=", returned_chat,
+        flush=True
+    )
+
+    if (
+        str(returned_id) == str(message_id)
+        and str(returned_chat) == str(CHANNEL_ID)
+    ):
+
+        return (
+            "✅ بله شناسه پیام و کانال را "
+            "در پاسخ تأیید کرد.\n"
+            "لطفاً تغییر کپشن را داخل کانال بررسی کن."
         )
 
-    returned_caption = result.get("caption")
+    return (
+        "⚠️ درخواست ویرایش به بله ارسال شد، "
+        "اما تأیید کامل دریافت نشد.\n\n"
+        f"شناسه درخواستی: {message_id}\n"
+        f"شناسه برگشتی: {returned_id}\n\n"
+        "این پاسخ به‌تنهایی ثابت نمی‌کند "
+        "که ویرایش انجام شده است.\n"
+        "گزارش در GitHub Actions ثبت شد."
+    )
 
-    if returned_caption is None:
-        return False, (
-            "بله متن ویرایش‌شده را در پاسخ برنگردانده است."
-        )
 
-    if returned_caption != caption:
-        return False, (
-            "متن برگشتی بله با متن جدید مطابقت ندارد."
-        )
-
-    return True, "OK"
-
+# =====================================
+# NORMAL CAPTION EDIT
+# =====================================
 
 def edit_caption(chat_id, message_id, caption):
+
     parsed = product(caption)
 
     if not parsed:
+
         send(
             chat_id,
-            "❌ متن باید شامل وزن و اجرت باشد.\n"
+            "❌ متن جدید باید وزن و اجرت داشته باشد.\n\n"
             "مثال:\n"
             "وزن: ۱۶.۰۲ گرم\n"
             "اجرت فقط: ۷٪"
         )
+
         return False
 
+    payload = {
+        "chat_id": CHANNEL_ID,
+        "message_id": message_id,
+        "caption": caption,
+        "reply_markup": keyboard(*parsed)
+    }
+
     print(
-        "EDIT REQUEST",
+        "EDIT CAPTION REQUEST:",
         "channel=", CHANNEL_ID,
         "message=", message_id,
-        "caption=", repr(caption[:500]),
+        "caption_length=", len(caption),
         flush=True
     )
 
     result = api(
         "editMessageCaption",
-        {
-            "chat_id": CHANNEL_ID,
-            "message_id": message_id,
-            "caption": caption,
-            "reply_markup": keyboard(*parsed)
-        }
+        payload
     )
 
-    verified, reason = verify_edit(
+    status = inspect_edit_result(
         result,
-        message_id,
-        caption
+        message_id
     )
 
-    if verified:
-        send(
-            chat_id,
-            "✅ بله شناسه و متن جدید را در پاسخ تأیید کرد.\n"
-            f"شناسه پست: {message_id}\n\n"
-            "لطفاً نتیجه را داخل کانال هم بررسی کن."
-        )
-    else:
-        send(
-            chat_id,
-            "⚠️ درخواست ویرایش ارسال شد، "
-            "اما تأیید کامل دریافت نشد.\n\n"
-            f"علت: {reason}\n\n"
-            "گزارش در GitHub Actions ثبت شد."
-        )
+    send(chat_id, status)
 
     return True
 
 
-def edit_existing(chat_id, message_id, msg):
-    caption = msg.get("caption") or msg.get("text") or ""
+# =====================================
+# MEDIA EDIT TEST
+# =====================================
+
+def edit_media(chat_id, message_id, msg):
 
     photos = msg.get("photo") or []
 
-    if not caption and not photos:
+    caption = (
+        msg.get("caption")
+        or msg.get("text")
+        or ""
+    )
+
+    if not photos:
+
         send(
             chat_id,
-            "متن کامل جدید یا عکس جدید بفرست."
+            "❌ برای آزمایش این روش، "
+            "باید عکس محصول را همراه "
+            "با کپشن کامل بفرستی."
         )
+
         return False
 
-    if photos:
-        parsed = product(caption) if caption else None
+    parsed = product(caption)
 
-        media = {
-            "type": "photo",
-            "media": photos[-1]["file_id"]
-        }
-
-        if caption:
-            if not parsed:
-                send(
-                    chat_id,
-                    "❌ کپشن عکس باید وزن و اجرت داشته باشد."
-                )
-                return False
-
-            media["caption"] = caption
-
-        payload = {
-            "chat_id": CHANNEL_ID,
-            "message_id": message_id,
-            "media": media
-        }
-
-        if parsed:
-            payload["reply_markup"] = keyboard(*parsed)
-
-        print(
-            "EDIT MEDIA REQUEST",
-            "channel=", CHANNEL_ID,
-            "message=", message_id,
-            flush=True
-        )
-
-        result = api("editMessageMedia", payload)
-
-        print(
-            "EDIT MEDIA RESULT",
-            repr(result)[:3000],
-            flush=True
-        )
+    if not parsed:
 
         send(
             chat_id,
-            "⚠️ درخواست تغییر عکس به بله ارسال شد.\n"
-            "لطفاً نتیجه را در کانال بررسی کن."
+            "❌ کپشن عکس باید وزن و اجرت داشته باشد."
         )
 
-        return True
+        return False
+
+    photo_id = photos[-1]["file_id"]
+
+    payload = {
+        "chat_id": CHANNEL_ID,
+        "message_id": message_id,
+        "media": {
+            "type": "photo",
+            "media": photo_id,
+            "caption": caption
+        },
+        "reply_markup": keyboard(*parsed)
+    }
+
+    print(
+        "EDIT MEDIA REQUEST:",
+        "channel=", CHANNEL_ID,
+        "message=", message_id,
+        "caption_length=", len(caption),
+        flush=True
+    )
+
+    result = api(
+        "editMessageMedia",
+        payload
+    )
+
+    status = inspect_edit_result(
+        result,
+        message_id
+    )
+
+    send(
+        chat_id,
+        "🖼 نتیجه آزمایش ویرایش عکس:\n\n"
+        + status
+    )
+
+    return True
+
+
+# =====================================
+# EDIT EXISTING POST
+# =====================================
+
+def edit_existing(chat_id, state, msg):
+
+    message_id = state["message_id"]
+
+    mode = state["mode"]
+
+    if mode == "media":
+
+        return edit_media(
+            chat_id,
+            message_id,
+            msg
+        )
+
+    caption = (
+        msg.get("caption")
+        or msg.get("text")
+        or ""
+    )
+
+    if not caption:
+
+        send(
+            chat_id,
+            "❌ کپشن کامل جدید را بفرست."
+        )
+
+        return False
 
     return edit_caption(
         chat_id,
@@ -352,105 +511,203 @@ def edit_existing(chat_id, message_id, msg):
     )
 
 
+# =====================================
+# HANDLE PRIVATE MESSAGES
+# =====================================
+
 def handle_message(msg):
+
     chat = msg.get("chat") or {}
 
     if chat.get("type") != "private":
         return
 
     chat_id = chat.get("id")
-    sender_id = (msg.get("from") or {}).get("id")
-    text = (msg.get("text") or "").strip()
+
+    sender_id = (
+        msg.get("from") or {}
+    ).get("id")
+
+    text = (
+        msg.get("text") or ""
+    ).strip()
+
+    # GET OWNER ID
 
     if text == "/id":
+
         send(
             chat_id,
-            f"شناسه عددی حساب شما: {sender_id}"
+            f"شناسه عددی شما:\n{sender_id}"
         )
+
         return
 
+    # SECURITY
+
     if not OWNER_ID:
+
         send(
             chat_id,
-            "⚠️ ابتدا OWNER_ID را در GitHub Secrets تنظیم کن."
+            "⚠️ ابتدا OWNER_ID را "
+            "در GitHub Secrets تنظیم کن."
         )
+
         return
 
     if sender_id != OWNER_ID:
+
         send(
             chat_id,
-            "⛔ دسترسی فقط برای مدیر فروشگاه است."
+            "⛔ فقط مدیر فروشگاه دسترسی دارد."
         )
+
         return
 
+    # CANCEL
+
     if text == "/cancel":
+
         editing.pop(chat_id, None)
 
         send(
             chat_id,
-            "ویرایش لغو شد."
+            "✅ عملیات لغو شد."
         )
+
         return
 
-    if text.startswith("/edit"):
+    # NORMAL EDIT
+
+    if text.startswith("/edit "):
+
         parts = digits(text).split()
 
-        if len(parts) != 2 or not parts[1].isdigit():
+        if (
+            len(parts) != 2
+            or not parts[1].isdigit()
+        ):
+
             send(
                 chat_id,
-                "برای ویرایش بنویس:\n/edit 299"
+                "مثال:\n/edit 299"
             )
-            return
 
-        editing[chat_id] = int(parts[1])
-
-        send(
-            chat_id,
-            "✏️ کپشن کامل جدید را بفرست.\n"
-            "برای انصراف /cancel را بزن."
-        )
-        return
-
-    if text.startswith("/sold"):
-        parts = digits(text).split()
-
-        if len(parts) != 2 or not parts[1].isdigit():
-            send(
-                chat_id,
-                "برای ثبت فروش بنویس:\n/sold 299"
-            )
             return
 
         message_id = int(parts[1])
 
+        editing[chat_id] = {
+            "message_id": message_id,
+            "mode": "caption"
+        }
+
         send(
             chat_id,
-            "💯 برای ثبت فروخته‌شدن محصول، "
-            "کپشن کامل همان پست را بفرست.\n\n"
-            "عبارت «💯 فروخته شد 💯» "
-            "را بالای متن اضافه کن.\n\n"
-            "عکس و دکمه‌های قیمت حفظ می‌شوند."
+            f"✏️ ویرایش کپشن پست {message_id}\n\n"
+            "حالا متن کامل جدید را بفرست.\n\n"
+            "وزن و اجرت را هم داخل متن بنویس."
         )
 
-        editing[chat_id] = message_id
         return
 
+    # MEDIA EDIT TEST
+
+    if text.startswith("/editmedia "):
+
+        parts = digits(text).split()
+
+        if (
+            len(parts) != 2
+            or not parts[1].isdigit()
+        ):
+
+            send(
+                chat_id,
+                "مثال:\n/editmedia 299"
+            )
+
+            return
+
+        message_id = int(parts[1])
+
+        editing[chat_id] = {
+            "message_id": message_id,
+            "mode": "media"
+        }
+
+        send(
+            chat_id,
+            f"🖼 آزمایش ویرایش عکس پست {message_id}\n\n"
+            "حالا عکس اصلی محصول را "
+            "با کپشن کامل جدید بفرست.\n\n"
+            "⚠️ این دستور ممکن است "
+            "عکس همان پست را جایگزین کند؛ "
+            "پس حتماً عکس اصلی را بفرست."
+        )
+
+        return
+
+    # SOLD
+
+    if text.startswith("/sold "):
+
+        parts = digits(text).split()
+
+        if (
+            len(parts) != 2
+            or not parts[1].isdigit()
+        ):
+
+            send(
+                chat_id,
+                "مثال:\n/sold 299"
+            )
+
+            return
+
+        message_id = int(parts[1])
+
+        editing[chat_id] = {
+            "message_id": message_id,
+            "mode": "caption"
+        }
+
+        send(
+            chat_id,
+            "💯 برای ثبت فروخته شد، "
+            "کپشن کامل محصول را دوباره بفرست "
+            "و عبارت زیر را به آن اضافه کن:\n\n"
+            "💯 فروخته شد 💯\n\n"
+            "⚠️ فعلاً ربات متن قبلی را "
+            "خودکار بازیابی نمی‌کند."
+        )
+
+        return
+
+    # PROCESS EDIT
+
     if chat_id in editing:
-        message_id = editing[chat_id]
 
         try:
+
             completed = edit_existing(
                 chat_id,
-                message_id,
+                editing[chat_id],
                 msg
             )
 
             if completed:
-                editing.pop(chat_id, None)
+
+                editing.pop(
+                    chat_id,
+                    None
+                )
 
         except Exception as exc:
+
             print(
-                "EDIT ERROR",
+                "EDIT ERROR:",
                 repr(exc),
                 flush=True
             )
@@ -458,18 +715,36 @@ def handle_message(msg):
             send(
                 chat_id,
                 "❌ درخواست ویرایش با خطا مواجه شد.\n"
-                "گزارش خطا در GitHub Actions ثبت شده."
+                "جزئیات در GitHub Actions ثبت شد.\n\n"
+                "برای تلاش دوباره، دستور ویرایش را "
+                "از ابتدا بفرست."
+            )
+
+            editing.pop(
+                chat_id,
+                None
             )
 
         return
 
-    caption = msg.get("caption") or msg.get("text") or ""
+    # =================================
+    # PUBLISH NEW PRODUCT
+    # =================================
 
-    parsed = product(caption)
+    caption = (
+        msg.get("caption")
+        or msg.get("text")
+        or ""
+    )
+
     photos = msg.get("photo") or []
 
+    parsed = product(caption)
+
     if parsed and photos:
+
         try:
+
             result = api(
                 "sendPhoto",
                 {
@@ -480,43 +755,76 @@ def handle_message(msg):
                 }
             )
 
-            mid = (
-                result.get("message_id")
-                if isinstance(result, dict)
-                else None
-            )
+            message_id = None
+
+            if isinstance(result, dict):
+
+                message_id = result.get(
+                    "message_id"
+                )
+
+                result_chat = (
+                    result.get("chat") or {}
+                ).get("id")
+
+                print(
+                    "PUBLISH RESULT:",
+                    "message=", message_id,
+                    "chat=", result_chat,
+                    flush=True
+                )
 
             send(
                 chat_id,
-                "✅ محصول منتشر شد.\n"
-                f"شناسه پیام: {mid}\n"
-                f"برای ویرایش: /edit {mid}\n"
-                f"برای ثبت فروش: /sold {mid}"
+                "✅ محصول منتشر شد.\n\n"
+                f"شناسه پیام: {message_id}\n\n"
+                f"ویرایش کپشن:\n/edit {message_id}\n\n"
+                f"آزمایش ویرایش عکس:\n"
+                f"/editmedia {message_id}"
             )
 
         except Exception as exc:
+
             print(
-                "PUBLISH ERROR",
+                "PUBLISH ERROR:",
                 repr(exc),
                 flush=True
             )
 
             send(
                 chat_id,
-                "❌ انتشار ناموفق بود. گزارش را در Actions ببین."
+                "❌ انتشار ناموفق بود.\n"
+                "گزارش خطا را در Actions ببین."
             )
 
-    else:
-        send(
-            chat_id,
-            "برای انتشار، عکس با کپشن وزن و اجرت بفرست.\n\n"
-            "ویرایش: /edit 299\n"
-            "ثبت فروش: /sold 299\n"
-            "شناسه حساب: /id"
-        )
+        return
 
+    # HELP
+
+    send(
+        chat_id,
+        "💎 ربات جواهری سالار\n\n"
+        "📸 انتشار محصول:\n"
+        "عکس + کپشن شامل وزن و اجرت\n\n"
+        "✏️ ویرایش کپشن:\n"
+        "/edit 299\n\n"
+        "🖼 آزمایش ویرایش عکس:\n"
+        "/editmedia 299\n\n"
+        "💯 ثبت فروخته شد:\n"
+        "/sold 299\n\n"
+        "❌ لغو عملیات:\n"
+        "/cancel\n\n"
+        "🆔 شناسه مدیر:\n"
+        "/id"
+    )
+
+
+# =====================================
+# MAIN BOT LOOP
+# =====================================
 
 def main():
+
     api(
         "deleteWebhook",
         {
@@ -532,12 +840,14 @@ def main():
     offset = 0
 
     print(
-        "SALAR BOT DIAGNOSTIC VERSION STARTED",
+        "SALAR BOT EDIT MEDIA TEST VERSION STARTED",
         flush=True
     )
 
     while True:
+
         try:
+
             updates = api(
                 "getUpdates",
                 {
@@ -548,34 +858,43 @@ def main():
             )
 
             for update in updates or []:
+
                 offset = max(
                     offset,
                     update["update_id"] + 1
                 )
 
                 try:
+
                     if update.get("callback_query"):
-                        callback(update["callback_query"])
+
+                        callback(
+                            update["callback_query"]
+                        )
 
                     else:
+
                         msg = (
                             update.get("message")
                             or update.get("edited_message")
                         )
 
                         if msg:
+
                             handle_message(msg)
 
                 except Exception as exc:
+
                     print(
-                        "UPDATE ERROR",
+                        "UPDATE ERROR:",
                         repr(exc),
                         flush=True
                     )
 
         except Exception as exc:
+
             print(
-                "POLL ERROR",
+                "POLL ERROR:",
                 repr(exc),
                 flush=True
             )
@@ -584,4 +903,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()
